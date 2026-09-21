@@ -47,7 +47,8 @@ ShellRoot {
   property int rangeDays: 30
   property bool configLoaded: false
   // The sign-in card shows on first run and whenever the session has expired.
-  readonly property bool needLogin: configLoaded && (appleId === "" || status.state === "auth-required")
+  readonly property bool needPcs: configLoaded && appleId !== "" && status.state === "pcs-required"
+  readonly property bool needLogin: configLoaded && (appleId === "" || status.state === "auth-required" || needPcs)
   // Keep the grid scrolled to the newest items (the bottom) until the user
   // moves away, so a fresh sync lands in view like on the phone.
   property bool pinBottom: !tour   // the tour starts at the top and scrolls down
@@ -144,7 +145,7 @@ ShellRoot {
     path: root.configPath
     watchChanges: true
     printErrors: false
-    onLoaded: { root.appleId = root.parseAppleId(text()); root.rangeDays = root.parseDays(text()); root.configLoaded = true; }
+    onLoaded: { root.appleId = root.parseAppleId(text()); root.rangeDays = root.parseDays(text()); root.configLoaded = true; if (root.needPcs) root.startPcs(); }
     onLoadFailed: { root.appleId = ""; root.configLoaded = true; }
     onFileChanged: reload()
   }
@@ -161,9 +162,11 @@ ShellRoot {
       onRead: data => root.loginLine(data)
     }
     onExited: (code, status) => {
-      if (loginCard.busy) {
+      var waiting = loginCard.busy || loginCard.step === "code" || loginCard.step === "pcs";
+      if (waiting) {
         loginCard.busy = false;
         if (loginCard.error === "") loginCard.error = "The sign-in helper stopped without an answer";
+        if (loginCard.step === "code") loginCard.step = "credentials";
       }
     }
   }
@@ -175,6 +178,7 @@ ShellRoot {
     printErrors: false
     onLoaded: {
       try { root.status = JSON.parse(text()); } catch (e) {}
+      if (root.needPcs) root.startPcs();
     }
     onFileChanged: reload()
   }
@@ -320,26 +324,42 @@ ShellRoot {
     login.running = true;
   }
 
+  function startPcs() {
+    if (login.running || root.appleId === "") return;
+    loginCard.step = "pcs";
+    loginCard.error = "";
+    loginCard.busy = true;
+    login.password = "";
+    login.command = [root.helperScript, "pcs"];
+    login.running = true;
+  }
+
   function loginLine(line) {
     var msg = null;
     try { msg = JSON.parse(String(line).trim()); } catch (e) { return; }
     if (msg.step === "2fa") {
       loginCard.busy = false;
       loginCard.step = "code";
+    } else if (msg.step === "pcs") {
+      loginCard.busy = false;
+      loginCard.step = "pcs";
+      loginCard.error = "";
     } else if (msg.step === "retry") {
       loginCard.error = msg.message || "Trying again…";
     } else if (msg.ok) {
       loginCard.busy = false;
+      var fromPcs = loginCard.step === "pcs";
       loginCard.reset();
-      root.appleId = msg.username;
+      root.appleId = msg.username || root.appleId;
       root.status = { state: "ok", message: "", at: "" };
-      toast.show("Signed in as " + msg.username);
+      toast.show(fromPcs ? "Photos access restored" : "Signed in as " + msg.username);
       keys.forceActiveFocus();
       startSync();
     } else if (msg.error) {
       loginCard.busy = false;
       loginCard.error = msg.error;
-      if (loginCard.step === "code") loginCard.step = "credentials";
+      if (msg.need === "login" || loginCard.step === "code") loginCard.step = "credentials";
+      else if (msg.need === "pcs") loginCard.step = "pcs";
     }
   }
 
@@ -1003,7 +1023,7 @@ ShellRoot {
         visible: root.items.length === 0 && !root.needLogin
         Text {
           anchors.horizontalCenter: parent.horizontalCenter
-          text: root.busy ? "First sync…" : (root.indexMissing ? "Nothing synced yet" : "No photos in the " + root.rangeLabel().replace("last ", "last "))
+          text: root.busy ? "First sync…" : (root.status.state === "error" ? root.status.message : (root.indexMissing ? "Nothing synced yet" : "No photos in the " + root.rangeLabel().replace("last ", "last ")))
           color: appTheme.foreground
           font.family: appTheme.fontFamily
           font.pixelSize: 16
@@ -1161,8 +1181,10 @@ ShellRoot {
           anchors.fill: parent
           theme: appTheme
           username: root.appleId
+          error: root.status.state === "auth-required" ? (root.status.message || "") : ""
           onSubmitCredentials: (u, p) => root.startLogin(u, p)
           onSubmitCode: code => login.write(code + "\n")
+          onRetryPcs: root.startPcs()
         }
       }
 

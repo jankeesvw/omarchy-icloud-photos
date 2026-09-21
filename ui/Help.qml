@@ -21,6 +21,7 @@ Rectangle {
       ["g  G", "oldest, newest"],
       ["-  +", "smaller, larger thumbnails"],
       ["r", "sync now"],
+      ["empty grid", "omarchy-icloud-photos-sync --why"],
       ["q", "quit"]
     ]},
     { title: "Everywhere", keys: [

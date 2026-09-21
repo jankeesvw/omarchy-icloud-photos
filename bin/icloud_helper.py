@@ -27,11 +27,13 @@ import logging
 import os
 import shutil
 import sys
+import time
 import urllib.parse
 from pathlib import Path
 
 from pyicloud_ipd.base import PyiCloudService
 from pyicloud_ipd.exceptions import (
+    PyiCloudAPIResponseException,
     PyiCloudConnectionErrorException,
     PyiCloudException,
     PyiCloudFailedLoginException,
@@ -42,6 +44,41 @@ CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "oma
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "omarchy-icloud-photos"
 WALK_LIMIT = 600  # newest assets to inspect when looking for a filename
 TS_TOLERANCE = 180  # seconds between local mtime and iCloud capture time
+PHOTOS_PCS_COOKIES = ("X-APPLE-WEBAUTH-PCS-Photos", "X-APPLE-WEBAUTH-PCS-Sharing")
+PCS_POLL_ATTEMPTS = 30
+PCS_POLL_SECONDS = 10
+
+
+def pcs_required_from_webservices(webservices):
+    ws = webservices or {}
+    for key in ("photos", "ckdatabasews"):
+        if (ws.get(key) or {}).get("pcsRequired"):
+            return True
+    return False
+
+
+def classify_icloudpd_log(text):
+    lower = (text or "").lower()
+    if "private db access disabled" in lower:
+        return "pcs-required"
+    if any(s in lower for s in ("authentication required for account", "two-factor", "2fa", "two-step", "please enter")):
+        return "auth-required"
+    return None
+
+
+def acquire_photos_pcs(request_fn, cookie_names_fn, on_waiting=None, attempts=PCS_POLL_ATTEMPTS,
+                       sleep_fn=time.sleep, interval=PCS_POLL_SECONDS):
+    if set(PHOTOS_PCS_COOKIES) <= set(cookie_names_fn()):
+        return "already"
+    if on_waiting:
+        on_waiting()
+    for i in range(attempts):
+        payload = request_fn() or {}
+        if payload.get("status") == "success" and set(PHOTOS_PCS_COOKIES) <= set(cookie_names_fn()):
+            return "acquired"
+        if i + 1 < attempts:
+            sleep_fn(interval)
+    return "timeout"
 
 
 def read_config(require_id=True):
@@ -87,13 +124,51 @@ def fail(message, **extra):
     sys.exit(1)
 
 
-def connect(cfg):
+def session_cookie_names(session):
+    return {c.name for c in session.cookies}
+
+
+def request_photos_pcs(api):
+    url = f"{api.SETUP_ENDPOINT}/requestPCS"
+    body = json.dumps({"appName": "photos", "derivedFromUserAction": True})
+    try:
+        r = api.session.post(
+            url, data=body, headers={"Content-type": "application/json"}, params=api.params
+        )
+        return r.json()
+    except PyiCloudAPIResponseException as e:
+        return {"status": "failure", "message": str(e)}
+    except ValueError:
+        return {"status": "failure", "message": "requestPCS returned no JSON"}
+
+
+def ensure_photos_pcs(api, on_waiting=None):
+    if not pcs_required_from_webservices(api.data.get("webservices")):
+        return "skipped"
+    result = acquire_photos_pcs(
+        request_fn=lambda: request_photos_pcs(api),
+        cookie_names_fn=lambda: session_cookie_names(api.session),
+        on_waiting=on_waiting,
+    )
+    if result == "timeout":
+        fail("Apple did not grant Photos access. Allow Access on a trusted iPhone or Mac, then try again.")
+    try:
+        api.session.cookies.save(ignore_discard=True, ignore_expires=True)
+    except Exception:
+        pass
+    return result
+
+
+def connect(cfg, require_pcs=True):
     # The constructor signs in by itself (session token first, password if
     # needed). Calling authenticate() again would be a second sign-in in a
     # row, which Apple answers with a 503.
     api = PyiCloudService("com", cfg["APPLE_ID"], lambda: None, cookie_directory=cfg["COOKIES"])
     if api.requires_2fa:
-        fail("iCloud session expired; run icloudpd --auth-only")
+        fail("iCloud session expired. Sign in again.", need="login")
+    if require_pcs and pcs_required_from_webservices(api.data.get("webservices")):
+        if not set(PHOTOS_PCS_COOKIES) <= session_cookie_names(api.session):
+            fail("iCloud Photos needs device approval.", need="pcs")
     return api
 
 
@@ -193,7 +268,39 @@ def cmd_login(args, cfg):
         api.trust_session()
     if args.save_config:
         save_apple_id(args.username)
+    notified = []
+
+    def waiting():
+        if not notified:
+            notified.append(True)
+            logging.getLogger().info("waiting for Photos device approval (PCS)")
+            emit({"step": "pcs"})
+
+    try:
+        ensure_photos_pcs(api, on_waiting=waiting)
+    except PyiCloudException as e:
+        fail(f"Could not open the Photos library: {e}")
     emit({"ok": True, "username": args.username})
+
+
+def cmd_pcs(args, cfg):
+    if demo(cfg):
+        emit({"ok": True, "username": cfg.get("APPLE_ID", "")})
+        return
+    api = connect(cfg, require_pcs=False)
+    notified = []
+
+    def waiting():
+        if not notified:
+            notified.append(True)
+            logging.getLogger().info("waiting for Photos device approval (PCS)")
+            emit({"step": "pcs"})
+
+    try:
+        ensure_photos_pcs(api, on_waiting=waiting)
+    except PyiCloudException as e:
+        fail(f"Could not open the Photos library: {e}")
+    emit({"ok": True, "username": cfg["APPLE_ID"]})
 
 
 def cmd_find(args, cfg):
@@ -276,9 +383,10 @@ def main():
     d = sub.add_parser("delete"); d.add_argument("--key", required=True); d.add_argument("--file", required=True)
     d.add_argument("--ts", type=int, required=True); d.add_argument("--companion")
     r = sub.add_parser("restore"); r.add_argument("--key", required=True)
+    sub.add_parser("pcs")
     args = p.parse_args()
     cfg = read_config(require_id=args.cmd != "login")
-    {"login": cmd_login, "find": cmd_find, "delete": cmd_delete, "restore": cmd_restore}[args.cmd](args, cfg)
+    {"login": cmd_login, "find": cmd_find, "delete": cmd_delete, "restore": cmd_restore, "pcs": cmd_pcs}[args.cmd](args, cfg)
 
 
 if __name__ == "__main__":

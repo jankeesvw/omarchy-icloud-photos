@@ -12,7 +12,6 @@ umask 077
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-icloud-photos/config"
 [ -f "$CONFIG" ] && . "$CONFIG"
 
-: "${APPLE_ID:?Set APPLE_ID in $CONFIG}"
 : "${LIBRARY:=$HOME/Pictures/iCloud}"
 : "${DAYS:=30}"
 # Upper bound on how many of the newest assets icloudpd walks per run. The
@@ -23,13 +22,54 @@ CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-icloud-photos/config"
 : "${CACHE:=${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-icloud-photos}"
 : "${THUMB_SIZE:=400}"
 : "${PREVIEW_SIZE:=2200}"
+LOG="$CACHE/sync.log"
+INDEX="$CACHE/index.json"
+STATUS="$CACHE/status.json"
+
+# icloudpd 1.32.3's linux-amd64 build logs 421 then exits 0, so the sync must
+# read the log, not only the exit code. Matches two-factor prompts as well.
+icloudpd_needs_pcs() {
+  [ -f "$1" ] && grep -qi 'private db access disabled' "$1"
+}
+
+icloudpd_needs_auth() {
+  [ -f "$1" ] && grep -qiE 'two-factor|2fa|two-step|Please enter|Authentication required for Account' "$1"
+}
+
+redact() { sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/[apple-id]/g'; }
+
+print_why() {
+  echo "status: $( [ -f "$STATUS" ] && jq -r '"\(.state)  \(.message)  count=\(.count)  \(.at)"' "$STATUS" || echo missing )"
+  echo "apple id: $( [ -n "${APPLE_ID:-}" ] && echo set || echo unset )"
+  echo "index: $( [ -f "$INDEX" ] && jq -r 'if type=="array" then "\(length) items" else "not a list" end' "$INDEX" || echo missing )"
+  echo "library: $(find "$LIBRARY" -type f 2>/dev/null | wc -l) files in $LIBRARY"
+  echo "session: $( [ -d "$COOKIES" ] && ls "$COOKIES" | wc -l || echo 0 ) files in cookie dir"
+  if icloudpd_needs_pcs "$LOG"; then
+    echo "icloudpd: Photos access expired (ADP). Allow Access on a trusted device."
+  elif icloudpd_needs_auth "$LOG"; then
+    echo "icloudpd: authentication required (see sync.log). The grid is empty until a session works."
+  elif [ -f "$LOG" ] && grep -qi 'ERROR' "$LOG"; then
+    echo "icloudpd: $(grep -i 'ERROR' "$LOG" | tail -1 | redact)"
+  fi
+  echo "sync.log:"
+  if [ -f "$LOG" ]; then redact < "$LOG" | tail -20 | sed 's/^/  /'; else echo "  missing"; fi
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --why) print_why; exit 0 ;;
+    --index-only) ;;
+    -h|--help)
+      echo "usage: omarchy-icloud-photos-sync [--index-only] [--why]"
+      exit 0 ;;
+  esac
+done
+
+: "${APPLE_ID:?Set APPLE_ID in $CONFIG}"
 
 THUMBS="$CACHE/thumbs"
 PREVIEWS="$CACHE/previews"
 VIDEOS="$CACHE/videos"
-INDEX="$CACHE/index.json"
-STATUS="$CACHE/status.json"
-LOG="$CACHE/sync.log"
 mkdir -p "$LIBRARY" "$THUMBS" "$PREVIEWS" "$VIDEOS"
 
 write_status() {
@@ -53,9 +93,6 @@ skip_download=0
 for arg in "$@"; do
   case "$arg" in
     --index-only) skip_download=1 ;;
-    -h|--help)
-      echo "usage: omarchy-icloud-photos-sync [--index-only]"
-      exit 0 ;;
   esac
 done
 
@@ -238,13 +275,24 @@ if [ "$skip_download" = 0 ]; then
   set +e
   wait "$dl"; rc=$?
   set -e
-  if [ "$rc" != 0 ]; then
-    if grep -qiE 'two-factor|2fa|two-step|password|Please enter' "$LOG"; then
-      write_status auth-required "iCloud session expired. Run: icloudpd --auth-only --username $APPLE_ID --cookie-directory $COOKIES"
-    else
-      write_status error "icloudpd failed (exit $rc), see $LOG"
-    fi
-    exit "$rc"
+  # Trust the log over the exit code: the amd64 binary has logged 421 or
+  # ACCESS_DENIED and still returned 0, which used to mark an empty library
+  # as a successful sync.
+  if icloudpd_needs_pcs "$LOG"; then
+    write_status pcs-required "Allow Access on a trusted iPhone or Mac to open the Photos library."
+    exit 1
+  fi
+  if icloudpd_needs_auth "$LOG"; then
+    line=$(grep -iE 'Authentication required|two-factor|2fa|Please enter' "$LOG" | tail -1 | redact || true)
+    write_status auth-required "iCloud needs you to sign in again.${line:+ $line}"
+    exit 1
+  fi
+  if [ "$rc" != 0 ] || grep -q 'ERROR' "$LOG"; then
+    line=$(grep 'ERROR' "$LOG" | tail -1 | redact || true)
+    extra=""
+    [ "$rc" != 0 ] && extra=" (exit $rc)"
+    write_status error "icloudpd failed${extra}.${line:+ $line}"
+    exit 1
   fi
 fi
 
