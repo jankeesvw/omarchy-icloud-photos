@@ -265,8 +265,9 @@ def main():
     # Everything pyicloud says goes to <cache>/helper.log so a failed sign-in
     # can be understood afterwards. Passwords are masked by pyicloud itself.
     CACHE.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(filename=CACHE / "helper.log", level=logging.DEBUG,
+    logging.basicConfig(filename=CACHE / "helper.log", level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    os.chmod(CACHE / "helper.log", 0o600)
     logging.getLogger().info("helper %s", " ".join(sys.argv[1:]))
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)

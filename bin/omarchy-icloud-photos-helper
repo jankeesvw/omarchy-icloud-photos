@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run the trash helper inside the repository's own virtualenv (see install.sh).
 set -euo pipefail
+umask 077
 dir="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 [ -x "$dir/.venv/bin/python" ] || { echo '{"ok": false, "error": "run install.sh first: .venv is missing"}'; exit 1; }
 exec "$dir/.venv/bin/python" "$dir/bin/icloud_helper.py" "$@"

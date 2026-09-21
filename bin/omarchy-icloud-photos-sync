@@ -7,6 +7,7 @@
 # iCloud or from the local library. The library only grows; the viewer simply
 # shows the last DAYS days of it.
 set -euo pipefail
+umask 077
 
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-icloud-photos/config"
 [ -f "$CONFIG" ] && . "$CONFIG"
