@@ -2,9 +2,12 @@
 """The app's line to iCloud: sign in, and move one asset to the bin or back.
 
     icloud_helper.py login   --username APPLE_ID [--save-config]
-    icloud_helper.py find    --file PATH --ts EPOCH
-    icloud_helper.py delete  --key KEY --file PATH --ts EPOCH [--companion PATH]
+    icloud_helper.py find    --file PATH --ts EPOCH [--shared]
+    icloud_helper.py delete  --key KEY --file PATH --ts EPOCH [--companion PATH] [--shared]
     icloud_helper.py restore --key KEY
+
+`--shared` looks in the iCloud Shared Library the account is in instead of
+the personal one; the sync tool puts those files under LIBRARY/shared.
 
 `login` reads the password as the first line on stdin and, when Apple asks
 for two-factor confirmation, prints {"step": "2fa"} and waits for the code
@@ -184,6 +187,36 @@ def find_asset(album, name, ts):
     return None
 
 
+def libraries(api, shared):
+    """(zone name, library) pairs to search: the personal library, or the
+    Shared Library. Apple allows one per account, and where it turns up
+    depends on who made it: the owner finds its SharedSync zone in the
+    private database next to PrimarySync, a participant in the shared one."""
+    if not shared:
+        return [("PrimarySync", api.photos)]
+    out = [(z, lib) for z, lib in api.photos.private_libraries.items() if z != "PrimarySync"]
+    out += list(api.photos.shared_libraries.items())
+    return out
+
+
+def locate(api, name, ts, shared):
+    """The asset with this name and time, and the library it lives in."""
+    for zone, library in libraries(api, shared):
+        asset = find_asset(library.all, name, ts)
+        if asset is not None:
+            return zone, library, asset
+    fail("asset not found in the newest items of the " + ("shared" if shared else "personal") + " library")
+
+
+def library_by_zone(api, zone):
+    if not zone or zone == "PrimarySync":
+        return api.photos
+    library = api.photos.private_libraries.get(zone) or api.photos.shared_libraries.get(zone)
+    if library is None:
+        fail(f"the shared library {zone} is no longer available")
+    return library
+
+
 def describe(asset):
     rec = asset._asset_record
     return {
@@ -305,10 +338,8 @@ def cmd_pcs(args, cfg):
 
 def cmd_find(args, cfg):
     api = connect(cfg)
-    asset = find_asset(api.photos.all, os.path.basename(args.file), args.ts)
-    if asset is None:
-        fail("asset not found in the newest items")
-    print(json.dumps({"ok": True, **describe(asset)}))
+    zone, _, asset = locate(api, os.path.basename(args.file), args.ts, args.shared)
+    print(json.dumps({"ok": True, "library": zone, **describe(asset)}))
 
 
 def cmd_delete(args, cfg):
@@ -318,14 +349,12 @@ def cmd_delete(args, cfg):
             fail(f"not a file: {f}")
     if demo(cfg):
         info = {"record": "demo", "changeTag": "", "filename": os.path.basename(args.file), "created": "", "size": 0}
-        new_tag = ""
+        zone, new_tag = ("demo-shared" if args.shared else "PrimarySync"), ""
     else:
         api = connect(cfg)
-        asset = find_asset(api.photos.all, os.path.basename(args.file), args.ts)
-        if asset is None:
-            fail("asset not found in the newest items")
+        zone, library, asset = locate(api, os.path.basename(args.file), args.ts, args.shared)
         info = describe(asset)
-        new_tag = set_deleted(api.photos, info["record"], info["changeTag"], True)
+        new_tag = set_deleted(library, info["record"], info["changeTag"], True)
 
     trash_dir = CACHE / "trash" / args.key
     trash_dir.mkdir(parents=True, exist_ok=True)
@@ -334,7 +363,7 @@ def cmd_delete(args, cfg):
         dest = trash_dir / os.path.basename(f)
         shutil.move(f, dest)
         moved.append([f, str(dest)])
-    manifest = {**info, "changeTag": new_tag, "files": moved}
+    manifest = {**info, "library": zone, "changeTag": new_tag, "files": moved}
     (CACHE / "trash" / f"{args.key}.json").write_text(json.dumps(manifest, indent=2))
     print(json.dumps({"ok": True, "key": args.key, **info}))
 
@@ -346,18 +375,19 @@ def cmd_restore(args, cfg):
     manifest = json.loads(manifest_path.read_text())
     if not demo(cfg):
         api = connect(cfg)
+        library = library_by_zone(api, manifest.get("library"))
         # The change tag moves on every edit; look the record up in Recently
         # Deleted for a fresh one and fall back to the tag we saved.
         tag = manifest["changeTag"]
         seen = 0
-        for asset in api.photos.recently_deleted:
+        for asset in library.recently_deleted:
             seen += 1
             if asset._asset_record["recordName"] == manifest["record"]:
                 tag = asset._asset_record["recordChangeTag"]
                 break
             if seen >= WALK_LIMIT:
                 break
-        set_deleted(api.photos, manifest["record"], tag, False)
+        set_deleted(library, manifest["record"], tag, False)
 
     for src, dest in manifest["files"]:
         if os.path.isfile(dest):
@@ -380,8 +410,9 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     l = sub.add_parser("login"); l.add_argument("--username", required=True); l.add_argument("--save-config", action="store_true")
     f = sub.add_parser("find"); f.add_argument("--file", required=True); f.add_argument("--ts", type=int, required=True)
+    f.add_argument("--shared", action="store_true")
     d = sub.add_parser("delete"); d.add_argument("--key", required=True); d.add_argument("--file", required=True)
-    d.add_argument("--ts", type=int, required=True); d.add_argument("--companion")
+    d.add_argument("--ts", type=int, required=True); d.add_argument("--companion"); d.add_argument("--shared", action="store_true")
     r = sub.add_parser("restore"); r.add_argument("--key", required=True)
     sub.add_parser("pcs")
     args = p.parse_args()

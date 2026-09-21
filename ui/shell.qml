@@ -51,7 +51,9 @@ ShellRoot {
   readonly property bool needLogin: configLoaded && (appleId === "" || status.state === "auth-required" || needPcs)
   // Keep the grid scrolled to the newest items (the bottom) until the user
   // moves away, so a fresh sync lands in view like on the phone.
-  property bool pinBottom: !tour   // the tour starts at the top and scrolls down
+  // root.tour, not tour: the animation below has id `tour`, and an id wins
+  // from a property in the same scope.
+  property bool pinBottom: !root.tour   // the tour starts at the top and scrolls down
   // True while the grid is being rebuilt, so a re-created selected thumb
   // does not yank the view towards itself before the layout has settled.
   property bool suppressReveal: false
@@ -198,6 +200,8 @@ ShellRoot {
       onStreamFinished: {
         var rows = [];
         try { rows = JSON.parse(text); } catch (e) {}
+        if (root.current && root.current.id === infoProc.forId && root.current.shared)
+          rows = [["Library", "Shared"]].concat(rows);
         root.infoRows = rows;
         root.infoForId = infoProc.forId;
       }
@@ -581,6 +585,7 @@ ShellRoot {
     if (job.action === "delete") {
       var cmd = [root.helperScript, "delete", "--key", it.id, "--file", it.path, "--ts", String(it.ts)];
       if (it.kind === "live" && it.video) cmd.push("--companion", it.video);
+      if (it.shared) cmd.push("--shared");
       trash.command = cmd;
       toast.showBusy(batchTotal > 1 ? "Deleting " + (batchDone + 1) + " of " + batchTotal + "…" : "Deleting " + it.name + "…");
     } else {

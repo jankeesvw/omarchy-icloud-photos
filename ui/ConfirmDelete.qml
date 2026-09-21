@@ -9,6 +9,9 @@ Rectangle {
   property var items: null   // list, or null when hidden
   readonly property int count: items ? items.length : 0
   readonly property var item: count > 0 ? items[0] : null
+  // Items from the Shared Library go to the Recently Deleted that every
+  // participant sees, so the dialog says so.
+  readonly property int sharedCount: items ? items.filter(function (i) { return i.shared === true; }).length : 0
 
   signal confirmed()
   signal cancelled()
@@ -101,7 +104,11 @@ Rectangle {
         width: parent.width
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.Wrap
-        text: (root.count > 1 ? "They disappear" : "It disappears") + " from your library on every device and " + (root.count > 1 ? "stay" : "stays") + " in Recently Deleted for 30 days."
+        text: (root.count > 1 ? "They disappear" : "It disappears")
+          + (root.sharedCount === 0 ? " from your library on every device"
+             : root.sharedCount === root.count ? " from the Shared Library, for everyone in it,"
+             : " from your library and, for " + root.sharedCount + " of them, from the Shared Library for everyone in it,")
+          + " and " + (root.count > 1 ? "stay" : "stays") + " in Recently Deleted for 30 days."
         color: theme.darkForeground
         font.family: theme.fontFamily
         font.pixelSize: theme.fontSize - 1

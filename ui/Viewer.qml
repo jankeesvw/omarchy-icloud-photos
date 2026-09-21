@@ -157,6 +157,41 @@ Rectangle {
     }
   }
 
+  // ---- Shared Library mark -------------------------------------------------
+  // The person top-right on the picture, as in the grid. Hidden while the
+  // details panel sits in that corner; the panel has a Library row instead.
+  // A video does not report its painted size, so it is worked out from the
+  // stream's resolution and rotation the way PreserveAspectFit would.
+  readonly property rect paintedVideo: {
+    var md = video.metaData;
+    var res = md ? md.value(MediaMetaData.Resolution) : undefined;
+    if (!res || !res.width || !res.height) return Qt.rect(frame.x, frame.y, frame.width, frame.height);
+    var w = res.width, h = res.height;
+    var o = md.value(MediaMetaData.Orientation) || 0;
+    if (o === 90 || o === 270) { var t = w; w = h; h = t; }
+    var k = Math.min(frame.width / w, frame.height / h);
+    return Qt.rect(frame.x + (frame.width - w * k) / 2, frame.y + (frame.height - h * k) / 2, w * k, h * k);
+  }
+  Rectangle {
+    visible: item !== null && item.shared === true && !root.infoOpen
+      && (root.videoShown || still.paintedWidth > 0)
+    x: root.videoShown ? (root.paintedVideo.x + root.paintedVideo.width - width - 14)
+                       : (still.x + (still.width + still.paintedWidth) / 2 - width - 14)
+    y: root.videoShown ? (root.paintedVideo.y + 14)
+                       : (still.y + (still.height - still.paintedHeight) / 2 + 14)
+    width: 32; height: 32; radius: 16
+    color: Qt.rgba(0, 0, 0, 0.5)
+    border.color: "white"
+    border.width: 2
+    Text {
+      anchors.centerIn: parent
+      text: "\uf007"
+      color: "white"
+      font.family: theme.fontFamily
+      font.pixelSize: 14
+    }
+  }
+
   // ---- Details panel (i) ---------------------------------------------------
   Rectangle {
     visible: root.infoOpen

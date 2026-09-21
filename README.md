@@ -52,6 +52,7 @@ Apple does not make an iCloud Photos client for Linux, and the web app is a brow
 ## What it does
 
 - **Grid by day.** The last month of photos, videos and Live Photos, grouped by day with the newest at the bottom. Thumbnails scale with a slider.
+- **Shared Library too.** If your account is in an iCloud Shared Library, its last month is in the same grid, each item with a small person mark top-right, like the Photos app. Delete and undo work there as well, for everyone in the library.
 - **Viewer.** Full-window stills, video with a timeline you can scrub, Live Photos that play once when you hover the little circle, like on the phone. `i` shows camera, lens, shutter, ISO, size and location. iPhone videos are HDR and most Linux players show them washed out; here they look right.
 - **Delete with undo.** `d` moves an item, or a selection, to iCloud's Recently Deleted, the same 30-day bin the Photos app uses. Undo brings it back, from the toast or with `u`. Nothing here can empty that bin.
 - **Copy and save.** `y` puts the image on the clipboard, or a file list when several are selected. `s` and the Download button save a copy to `~/Downloads` as JPEG or MP4, whatever the original was. Clicking the filename copies its full path.
@@ -97,7 +98,7 @@ The window is the only new thing here; the plumbing is existing, well-worn tools
 
 ## Safety first
 
-The sync can only download. icloudpd runs in its default copy mode, without `--auto-delete` or `--keep-omarchy-icloud-photos-days`, and the local library is never pruned: shrink the range and files simply leave the grid. The one thing that writes to iCloud is `d`, which flips a single asset's `isDeleted` flag, exactly what the Photos app does when you tap the bin. There is no bulk delete and no way to empty Recently Deleted from here.
+The sync can only download. icloudpd runs in its default copy mode, without `--auto-delete` or `--keep-omarchy-icloud-photos-days`, and the local library is never pruned: shrink the range and files simply leave the grid. The one thing that writes to iCloud is `d`, which flips a single asset's `isDeleted` flag, exactly what the Photos app does when you tap the bin. There is no bulk delete and no way to empty Recently Deleted from here. For an item from the Shared Library that is the library's own Recently Deleted, which every participant sees; the dialog says so before you confirm.
 
 It talks to iCloud through the same unofficial web API icloudpd uses. Apple can change that at any time, and Apple shuts the sign-in door for a while after several sign-ins in a short time; when that happens the card says so, and the only cure is to leave it alone for half an hour, since every attempt extends the wait. When something breaks, the window says so.
 
@@ -134,7 +135,8 @@ A click selects, a second click on the selected item opens it. Hovering does not
 | Variable | Default | Meaning |
 |---|---|---|
 | `APPLE_ID` | set by the sign-in card | The account to sync |
-| `LIBRARY` | `~/Pictures/iCloud` | Where originals land, as `YYYY/MM/` folders |
+| `LIBRARY` | `~/Pictures/iCloud` | Where originals land, as `YYYY/MM/` folders; the Shared Library goes under `shared/` in it |
+| `SHARED_LIBRARY` | `auto` | `auto` syncs the Shared Library your account is in, `no` leaves it out, a `SharedSync-…` name from `icloudpd --list-libraries` picks one |
 | `COOKIES` | `~/.config/icloudpd` | Where the iCloud session lives |
 | `CACHE` | `~/.cache/omarchy-icloud-photos` | Thumbnails, previews, SDR video copies and the index |
 | `LAUNCHER_NAME` | `Omarchy iCloud Photos` | What the app is called in the launcher; re-run `install.sh` after changing it |
@@ -149,13 +151,13 @@ icloudpd --auth-only --username you@example.com --cookie-directory ~/.config/icl
 
 ## Demo mode
 
-`omarchy-icloud-photos --demo` starts the window on a stand-in library built from the Omarchy theme backgrounds: photos, portrait crops, a few slow-pan videos and Live Photo pairs, spread over the last days. It lives under `~/.cache/omarchy-icloud-photos-demo`, apart from your real config and cache, and nothing in it talks to iCloud, so delete and undo can be tried freely. That is what the screenshots are made with. `omarchy-icloud-photos-demo --reset` rebuilds it, and `omarchy-icloud-photos --demo --tour` scrolls through the grid by itself and opens a photo, for recording a clip.
+`omarchy-icloud-photos --demo` starts the window on a stand-in library built from the Omarchy theme backgrounds: photos, portrait crops, a few slow-pan videos and Live Photo pairs, some of them marked as coming from a Shared Library, spread over the last days. It lives under `~/.cache/omarchy-icloud-photos-demo`, apart from your real config and cache, and nothing in it talks to iCloud, so delete and undo can be tried freely. That is what the screenshots are made with. `omarchy-icloud-photos-demo --reset` rebuilds it, and `omarchy-icloud-photos --demo --tour` scrolls through the grid by itself and opens a photo, for recording a clip.
 
 ## How it works
 
-`bin/omarchy-icloud-photos-sync` runs icloudpd for the newest items, then indexes every file in the library from the last month. Capture time is the file's mtime, which icloudpd sets to the asset's creation date. Each item gets a 400 px thumbnail; HEIC also gets a 2200 px JPEG preview because Qt cannot decode HEIC. A Live Photo's `_HEVC.MOV` companion folds into its still. HDR videos get a tone-mapped H.264 copy for playback; the original stays untouched and is what `o`, `s` and `Y` refer to. The result is `index.json` and `status.json` in the cache; the window watches both.
+`bin/omarchy-icloud-photos-sync` runs icloudpd for the newest items, once for your own library and once more with `--library` for the Shared Library your account is in (looked up with `--list-libraries` once a day and landing under `shared/`), then indexes every file in the library from the last month. Capture time is the file's mtime, which icloudpd sets to the asset's creation date. Each item gets a 400 px thumbnail; HEIC also gets a 2200 px JPEG preview because Qt cannot decode HEIC. A Live Photo's `_HEVC.MOV` companion folds into its still. HDR videos get a tone-mapped H.264 copy for playback; the original stays untouched and is what `o`, `s` and `Y` refer to. The result is `index.json` and `status.json` in the cache; the window watches both.
 
-`bin/icloud_helper.py` is the only code that talks to iCloud beyond downloading: it signs in, and it moves one asset at a time to Recently Deleted or back. It runs on the pyicloud module that ships with icloudpd, in the repository's own virtualenv.
+`bin/icloud_helper.py` is the only code that talks to iCloud beyond downloading: it signs in, and it moves one asset at a time to Recently Deleted or back, in whichever library it came from. The Shared Library sits in the owner's private database next to the personal one and in the shared database of everyone who joined, so the helper looks in both. It runs on the pyicloud module that ships with icloudpd, in the repository's own virtualenv.
 
 ```
 bin/omarchy-icloud-photos          launcher: quickshell -p ui/shell.qml (--demo, --tour)

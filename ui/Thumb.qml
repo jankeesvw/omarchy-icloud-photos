@@ -1,7 +1,8 @@
 import QtQuick
 
 // One square in the grid. Shows the cached thumbnail, a play badge with the
-// duration for videos and a LIVE badge for Live Photos.
+// duration for videos, a LIVE badge for Live Photos and a person top-right
+// for items from the iCloud Shared Library.
 Rectangle {
   id: root
 
@@ -91,8 +92,30 @@ Rectangle {
     }
   }
 
+  // Shared Library mark: a person top-right, the way the Photos app puts
+  // it. Steps aside for the check mark when the item is ticked.
+  Rectangle {
+    visible: !!item && item.shared === true
+    anchors.right: root.checked ? check.left : parent.right
+    anchors.rightMargin: root.checked ? 6 : 8
+    anchors.top: parent.top
+    anchors.topMargin: 8
+    width: 22; height: 22; radius: 11
+    color: Qt.rgba(0, 0, 0, 0.5)
+    border.color: "white"
+    border.width: 1.5
+    Text {
+      anchors.centerIn: parent
+      text: "\uf007"
+      color: "white"
+      font.family: theme.fontFamily
+      font.pixelSize: 10
+    }
+  }
+
   // Check mark for items in a multi-selection.
   Rectangle {
+    id: check
     visible: root.checked
     anchors.right: parent.right
     anchors.top: parent.top

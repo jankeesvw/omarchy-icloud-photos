@@ -4,7 +4,8 @@
 #
 # Everything lives under <cache>/omarchy-icloud-photos-demo: a library of "photos"
 # with capture times spread over the last days, a few short videos and Live
-# Photo pairs rendered with ffmpeg, and a config with DEMO=1 so the sync
+# Photo pairs rendered with ffmpeg, some of it under library/shared as if it
+# came from an iCloud Shared Library, and a config with DEMO=1 so the sync
 # script only indexes and the helper never talks to iCloud. `omarchy-icloud-photos
 # --demo` runs this once and then starts the window against it.
 set -euo pipefail
@@ -83,11 +84,12 @@ PY
   }
 
   place() {
-    # place SRC-FILE -> moves it into YYYY/MM with a capture time in the window
+    # place SRC-FILE [shared] -> moves it into YYYY/MM (under shared/ when
+    # asked) with a capture time in the window
     local src="$1" ts day dir
     day=$(( n % DAYS ))
     ts=$(( now - day * 86400 - (n * 7919) % 43200 - 28800 ))
-    dir="$LIBRARY/$(date -d "@$ts" +%Y/%m)"
+    dir="$LIBRARY${2:+/shared}/$(date -d "@$ts" +%Y/%m)"
     mkdir -p "$dir"
     mv "$src" "$dir/"
     touch -d "@$ts" "$dir/$(basename "$src")"
@@ -98,11 +100,11 @@ PY
   for src in "${shuffled[@]}"; do
     i=$((i + 1))
     n=$((n + 1))
-    # The full picture as a photo…
+    # The full picture as a photo… (every fourth one from the Shared Library)
     magick "$src" -resize '2400x2400>' -quality 90 "$tmp/IMG_$n.JPG"
     if flat "$tmp/IMG_$n.JPG"; then rm -f "$tmp/IMG_$n.JPG"; continue; fi
     tag "$tmp/IMG_$n.JPG" "$n"
-    place "$tmp/IMG_$n.JPG"
+    place "$tmp/IMG_$n.JPG" "$( (( i % 4 == 1 )) && echo shared || true)"
 
     # …and a portrait crop of it as a second, phone-shaped photo.
     n=$((n + 1))
@@ -116,7 +118,7 @@ PY
       ffmpeg -v error -y -loop 1 -i "$src" -t 6 -r 30 \
         -vf "scale=1920:1080:force_original_aspect_ratio=increase,zoompan=z='1.0+0.0015*on':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=180:s=1920x1080:fps=30,format=yuv420p" \
         -c:v libx264 -preset veryfast -crf 24 -movflags +faststart "$tmp/IMG_$n.MOV"
-      place "$tmp/IMG_$n.MOV"
+      place "$tmp/IMG_$n.MOV" "$( (( i % 8 == 4 )) && echo shared || true)"
     fi
 
     # Every fifth source becomes a Live Photo: still plus a two-second clip.

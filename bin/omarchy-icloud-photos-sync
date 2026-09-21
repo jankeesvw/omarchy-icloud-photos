@@ -6,6 +6,9 @@
 # --auto-delete or --keep-omarchy-icloud-photos-days, so nothing is ever removed from
 # iCloud or from the local library. The library only grows; the viewer simply
 # shows the last DAYS days of it.
+#
+# An iCloud Shared Library the account takes part in is pulled as well, into
+# LIBRARY/shared, and its items carry a person mark in the grid.
 set -euo pipefail
 umask 077
 
@@ -18,6 +21,9 @@ CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-icloud-photos/config"
 # date filter is applied per item, so without this bound every run would page
 # through the whole library.
 : "${RECENT_LIMIT:=2000}"
+# The iCloud Shared Library, if the account is in one: `auto` finds it,
+# `no` leaves it alone, a `SharedSync-…` name picks one by hand.
+: "${SHARED_LIBRARY:=auto}"
 : "${COOKIES:=${XDG_CONFIG_HOME:-$HOME/.config}/icloudpd}"
 : "${CACHE:=${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-icloud-photos}"
 : "${THUMB_SIZE:=400}"
@@ -70,7 +76,9 @@ done
 THUMBS="$CACHE/thumbs"
 PREVIEWS="$CACHE/previews"
 VIDEOS="$CACHE/videos"
-mkdir -p "$LIBRARY" "$THUMBS" "$PREVIEWS" "$VIDEOS"
+SHARED_DIR="$LIBRARY/shared"
+LIBRARIES="$CACHE/libraries.txt"
+mkdir -p "$LIBRARY" "$SHARED_DIR" "$THUMBS" "$PREVIEWS" "$VIDEOS"
 
 write_status() {
   # write_status STATE [MESSAGE] [COUNT]
@@ -219,13 +227,15 @@ build_index() {
     fi
 
     ts=$(stat -c %Y "$f")
+    shared=false
+    [[ "$f" == "$SHARED_DIR/"* ]] && shared=true
     items+=("$(jq -cn \
       --arg id "$key" --arg path "$f" --arg name "$name" --arg kind "$kind" \
       --arg thumb "$thumb" --arg preview "$preview" --arg video "$video" \
-      --argjson ts "$ts" --argjson duration "${duration:-0}" \
+      --argjson ts "$ts" --argjson duration "${duration:-0}" --argjson shared "$shared" \
       --arg date "$(date -d "@$ts" +%F)" --arg time "$(date -d "@$ts" +%H:%M)" \
       '{id: $id, path: $path, name: $name, kind: $kind, thumb: $thumb, preview: $preview,
-        video: $video, ts: $ts, duration: $duration, date: $date, time: $time}')")
+        video: $video, ts: $ts, duration: $duration, date: $date, time: $time, shared: $shared}')")
     keep+=("$key")
     count=$((count + 1))
   done
@@ -246,8 +256,13 @@ build_index() {
 
 }
 
-if [ "$skip_download" = 0 ]; then
-  write_status syncing "Downloading from iCloud"
+# --- Download ---------------------------------------------------------------
+# One icloudpd run per library. The index is rebuilt every 20 seconds while
+# it downloads, so the grid fills up as files arrive.
+download() {
+  # download LABEL DIR [icloudpd args…]
+  local label="$1" dir="$2"; shift 2
+  write_status syncing "Downloading $label" "${count:-0}"
   # --skip-created-before gets one extra day so a photo taken late on day
   # DAYS in another time zone is still included; the viewer trims precisely.
   # No --set-exif-datetime: it rewrites files that lack an EXIF date, the
@@ -256,21 +271,20 @@ if [ "$skip_download" = 0 ]; then
   icloudpd \
     --username "$APPLE_ID" \
     --cookie-directory "$COOKIES" \
-    --directory "$LIBRARY" \
+    --directory "$dir" \
     --recent "$RECENT_LIMIT" \
     --skip-created-before "$((DAYS + 1))d" \
     --size original \
     --folder-structure '{:%Y/%m}' \
     --no-progress-bar \
     --log-level info \
-    > "$LOG" 2>&1 &
-  dl=$!
-  # Index what has landed so far every 20 seconds while the download runs.
+    "$@" >> "$LOG" 2>&1 &
+  local dl=$!
   while kill -0 "$dl" 2>/dev/null; do
     for _ in $(seq 1 20); do kill -0 "$dl" 2>/dev/null || break; sleep 1; done
     kill -0 "$dl" 2>/dev/null || break
     build_index quick
-    write_status syncing "Downloading from iCloud" "$count"
+    write_status syncing "Downloading $label" "$count"
   done
   set +e
   wait "$dl"; rc=$?
@@ -291,9 +305,40 @@ if [ "$skip_download" = 0 ]; then
     line=$(grep 'ERROR' "$LOG" | tail -1 | redact || true)
     extra=""
     [ "$rc" != 0 ] && extra=" (exit $rc)"
-    write_status error "icloudpd failed${extra}.${line:+ $line}"
+    write_status error "icloudpd failed on $label${extra}.${line:+ $line}"
     exit 1
   fi
+}
+
+# The shared libraries the account is in, one zone name per line. Asked of
+# iCloud once a day; in between the cached list is used.
+shared_libraries() {
+  case "$SHARED_LIBRARY" in
+    no|false|0) return 0 ;;
+    auto) ;;
+    *) printf '%s\n' "$SHARED_LIBRARY"; return 0 ;;
+  esac
+  if [ ! -s "$LIBRARIES" ] || [ -n "$(find "$LIBRARIES" -mmin +1440 2>/dev/null)" ]; then
+    if icloudpd --username "$APPLE_ID" --cookie-directory "$COOKIES" --list-libraries --log-level error \
+        2>>"$LOG" | grep '^SharedSync-' > "$LIBRARIES.tmp"; then
+      mv "$LIBRARIES.tmp" "$LIBRARIES"
+    else
+      # No shared library, or the listing failed: remember that for a day
+      # too, but keep an older list when there was one.
+      [ -s "$LIBRARIES" ] && touch "$LIBRARIES" || : > "$LIBRARIES"
+      rm -f "$LIBRARIES.tmp"
+    fi
+  fi
+  cat "$LIBRARIES"
+}
+
+if [ "$skip_download" = 0 ]; then
+  : > "$LOG"
+  download "from iCloud" "$LIBRARY"
+  while read -r zone; do
+    [ -n "$zone" ] || continue
+    download "the shared library" "$SHARED_DIR" --library "$zone"
+  done < <(shared_libraries)
 fi
 
 # Quick pass first so the grid is complete right away, then the HDR videos.
