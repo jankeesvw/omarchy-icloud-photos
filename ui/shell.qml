@@ -219,7 +219,14 @@ ShellRoot {
       }
     }
   }
-  Process { id: copier }
+  Process {
+    id: copier
+    property string successMessage: ""
+    onExited: (code, status) => {
+      if (code === 0) toast.show(successMessage);
+      else toast.show("Could not copy to clipboard", 3000);
+    }
+  }
 
   // Re-index in the background after a delete or restore so index.json
   // matches what is on disk again; the FileView picks the result up.
@@ -425,16 +432,16 @@ ShellRoot {
       // attachments. Plain text gets the paths, one per line.
       var uris = list.map(function (it) { return "file://" + encodeURI(it.kind === "video" ? it.video : it.path); });
       copier.command = ["bash", "-c", 'printf "%s\n" "$@" | wl-copy --type text/uri-list', "_"].concat(uris);
+      copier.successMessage = "Copied " + list.length + " files";
       copier.running = true;
-      toast.show("Copied " + list.length + " files");
       return;
     }
     var it = list[0];
     var src = it.kind === "video" ? it.thumb : it.preview;
-    var mime = /\.png$/i.test(src) ? "image/png" : "image/jpeg";
-    copier.command = ["bash", "-c", 'wl-copy --type "$1" < "$2"', "_", mime, src];
+    copier.command = [binDir + "/omarchy-icloud-photos-copy", src];
+    copier.successMessage = "Copied image to clipboard";
+    toast.show("Copying image…", 30000);
     copier.running = true;
-    toast.show("Copied to clipboard");
   }
 
   // Save to ~/Downloads in a format anything can open: HEIC becomes a
@@ -505,12 +512,13 @@ ShellRoot {
   onViewerOpenChanged: if (!viewerOpen) infoOpen = false
 
   function copyPath() {
+    if (copier.running) return;
     var list = targets();
     if (list.length === 0) return;
     var paths = list.map(function (it) { return it.path; });
     copier.command = ["bash", "-c", 'printf "%s\n" "$@" | wl-copy', "_"].concat(paths);
+    copier.successMessage = list.length === 1 ? "Copied " + paths[0] : "Copied " + list.length + " paths";
     copier.running = true;
-    toast.show(list.length === 1 ? "Copied " + paths[0] : "Copied " + list.length + " paths");
   }
 
   function startSync() {
