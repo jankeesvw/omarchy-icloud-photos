@@ -115,12 +115,15 @@ build_index() {
     # make_sdr SRC OUT
     local src="$1" out="$2" tmp="$2.tmp.mp4"
 
-    # Try Intel QSV hardware acceleration (GPU decode, tone-map, scale, and encode)
+    # Intel QSV first: decode, tone-map, scale and encode all on the iGPU,
+    # seconds instead of minutes. Anything else (AMD, nvidia, no media driver)
+    # fails in a few milliseconds and falls through to the software chain.
+    # Note that this trusts the exit code: a driver that accepts tonemap=1
+    # without performing it would leave a file tagged bt709 that is still HLG.
     if ffmpeg -v error -y -hwaccel qsv -hwaccel_output_format qsv -c:v hevc_qsv -i "$src" \
         -vf "vpp_qsv=w='if(gt(iw,ih),min(${PREVIEW_SIZE},iw),-1)':h='if(gt(iw,ih),-1,min(${PREVIEW_SIZE},ih))':format=nv12:out_color_matrix=bt709:out_color_primaries=bt709:out_color_transfer=bt709:tonemap=1" \
         -c:v h264_qsv -global_quality 25 -c:a aac -b:a 128k -movflags +faststart "$tmp" 2>/dev/null; then
-      mv "$tmp" "$out"
-      return 0
+      mv "$tmp" "$out" && return 0
     fi
     rm -f "$tmp"
 
