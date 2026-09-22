@@ -38,8 +38,9 @@ git clone https://github.com/jankeesvw/omarchy-icloud-photos.git ~/Documents/git
 
 The installer links the launcher and the sync script into `~/.local/bin`, adds "Omarchy iCloud Photos" to the app launcher, fetches the icloudpd binary into `~/.local/bin` when it is not installed already, creates a small Python virtualenv for the iCloud helper (a 3.13 from mise when the system Python is newer) and enables the sync timer. Nothing after the pacman line needs root.
 
-Then start `omarchy-icloud-photos`, or pick "Omarchy iCloud Photos" in the launcher, and sign in. Apple ID and password first, then the six-digit code from your phone.
- The first sync takes a few minutes. Run `install.sh` again after a `git pull`; everything is linked, not copied.
+Then start `omarchy-icloud-photos`, or pick "Omarchy iCloud Photos" in the launcher, and sign in. Apple ID and password first, then the six-digit code from your phone. If Advanced Data Protection is on, tap Allow Access on a trusted iPhone or Mac when the window asks. Allow Data Access on iCloud.com has to be on, or Apple refuses the library. That grant lasts about a month. When it stops working, the same card comes back. The password is only asked again if the longer sign-in session has expired.
+
+The first sync takes a few minutes. Run `install.sh` again after a `git pull`; everything is linked, not copied.
 
 </details>
 
@@ -56,7 +57,7 @@ Apple does not make an iCloud Photos client for Linux, and the web app is a brow
 - **Viewer.** Full-window stills, video with a timeline you can scrub, Live Photos that play once when you hover the little circle, like on the phone. `i` shows camera, lens, shutter, ISO, size and location. iPhone videos are HDR and most Linux players show them washed out; `omarchy-icloud-photos-sync --convert-all` builds the SDR copies that make them look right. It is offered, not taken: a sync marks them and converts nothing until you ask.
 - **Delete with undo.** `d` moves an item, or a selection, to iCloud's Recently Deleted, the same 30-day bin the Photos app uses. Undo brings it back, from the toast or with `u`. Nothing here can empty that bin.
 - **Copy and save.** `Ctrl+C`, `y`, or right-click → Copy puts the image on the clipboard as PNG from either the grid or the viewer, including for HEIC originals, so browsers can paste it as an image. Multiple selections in the grid copy as a list of files in their original image formats; the viewer copies only the opened image. Right-clicking a selected photo keeps the selection, while right-clicking another photo selects that one. `s` and the Download button save a copy to `~/Downloads` as JPEG or MP4, whatever the original was. Clicking the filename copies its full path.
-- **Signs in by itself.** Apple ID, password and the two-factor code go into the window on first run and whenever the session expires. The password is only used to open the session and is never stored.
+- **Signs in by itself.** Apple ID, password and the two-factor code go into the window on first run and whenever the session expires. With Advanced Data Protection, the window then asks you to tap Allow Access on a trusted device. That grant lasts about a month, and the same card comes back when it stops working. The password is only used to open the session and is never stored. It is only asked again if the longer sign-in session has expired.
 - **Wallpaper.** `W` makes the current photo the Omarchy background, HEIC included.
 - **Stays in sync.** A systemd user timer pulls new items every 30 minutes. An open window picks them up on its own.
 - **Follows your theme.** Colours come live from Omarchy's `colors.toml`; switch themes and the window switches with you.

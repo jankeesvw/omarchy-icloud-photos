@@ -9,12 +9,13 @@ Item {
 
   required property var theme
   property string username: ""
-  property string step: "credentials"   // credentials | code
+  property string step: "credentials"   // credentials | code | pcs
   property bool busy: false
   property string error: ""
 
   signal submitCredentials(string username, string password)
   signal submitCode(string code)
+  signal retryPcs()
 
   function reset() {
     step = "credentials";
@@ -25,6 +26,7 @@ Item {
   }
 
   function focusFirst() {
+    if (step === "pcs") return;
     if (step === "code") codeField.forceActiveFocus();
     else if (usernameField.text.length === 0) usernameField.forceActiveFocus();
     else passwordField.forceActiveFocus();
@@ -102,7 +104,8 @@ Item {
       }
       Text {
         anchors.horizontalCenter: parent.horizontalCenter
-        text: root.step === "code" ? "Enter the verification code" : "Sign in to iCloud"
+        text: root.step === "pcs" ? "Allow access on your iPhone"
+              : (root.step === "code" ? "Enter the verification code" : "Sign in to iCloud")
         color: theme.brightForeground
         font.family: theme.fontFamily
         font.pixelSize: 17
@@ -112,9 +115,11 @@ Item {
         width: 300
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.Wrap
-        text: root.step === "code"
-          ? "Apple sent a six-digit code to your trusted devices."
-          : "Your password is only used to open a session and is not stored. The session lasts a few months."
+        text: root.step === "pcs"
+          ? "Apple sent an access request to your trusted devices. Tap Allow Access. With Advanced Data Protection this lasts about a month."
+          : (root.step === "code"
+            ? "Apple sent a six-digit code to your trusted devices."
+            : "Your password is only used to open a session and is not stored. The session lasts a few months.")
         color: theme.darkForeground
         font.family: theme.fontFamily
         font.pixelSize: theme.fontSize - 1
@@ -174,6 +179,24 @@ Item {
             root.busy = true;
             root.submitCredentials(usernameField.text.trim(), passwordField.text);
           }
+        }
+      }
+
+      Column {
+        spacing: 10
+        visible: root.step === "pcs"
+        Text {
+          visible: root.error.length === 0
+          anchors.horizontalCenter: parent.horizontalCenter
+          text: "Waiting for your device…"
+          color: theme.foreground
+          font.family: theme.fontFamily
+          font.pixelSize: theme.fontSize
+        }
+        Button {
+          visible: root.error.length > 0
+          label: "Try again"
+          onClicked: { root.error = ""; root.retryPcs(); }
         }
       }
 
