@@ -398,8 +398,12 @@ ShellRoot {
     opener.running = true;
   }
 
+  function copyTargets() {
+    return viewerOpen ? (current ? [current] : []) : targets();
+  }
+
   function copyCurrent() {
-    var list = targets();
+    var list = copyTargets();
     if (list.length === 0) return;
     if (list.length > 1) {
       // A list of files: file managers paste them as copies, chat apps as
@@ -410,7 +414,8 @@ ShellRoot {
       toast.show("Copied " + list.length + " files");
       return;
     }
-    var src = current.kind === "video" ? current.thumb : current.preview;
+    var it = list[0];
+    var src = it.kind === "video" ? it.thumb : it.preview;
     var mime = /\.png$/i.test(src) ? "image/png" : "image/jpeg";
     copier.command = ["bash", "-c", 'wl-copy --type "$1" < "$2"', "_", mime, src];
     copier.running = true;
