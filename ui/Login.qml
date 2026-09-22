@@ -116,7 +116,7 @@ Item {
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.Wrap
         text: root.step === "pcs"
-          ? "Apple sent an access request to your trusted devices. Tap Allow Access. With Advanced Data Protection this lasts about an hour."
+          ? "Apple sent an access request to your trusted devices. Tap Allow Access. With Advanced Data Protection this lasts about a month."
           : (root.step === "code"
             ? "Apple sent a six-digit code to your trusted devices."
             : "Your password is only used to open a session and is not stored. The session lasts a few months.")
