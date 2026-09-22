@@ -48,35 +48,145 @@ write_status() {
   mv "$STATUS.tmp" "$STATUS"
 }
 
-# One run at a time; a second invocation just leaves.
-exec 9>"$CACHE/lock"
+skip_download=0
+# A demo library (see omarchy-icloud-photos-demo) has nothing to download.
+[ "${DEMO:-0}" = 1 ] && skip_download=1
+
+# sync         download, then index
+# convert      convert the named items to SDR, then index
+# convert-all  convert everything the index marks needs_sdr
+mode=sync
+force=0
+convert_ids=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --index-only) skip_download=1 ;;
+    --convert)
+      mode=convert
+      shift
+      # Every following bare word is an item id.
+      while [ "$#" -gt 0 ] && [ "${1#--}" = "$1" ]; do convert_ids+=("$1"); shift; done
+      continue ;;
+    --convert-all) mode=convert-all ;;
+    --force) force=1 ;;
+    -h|--help)
+      echo "usage: omarchy-icloud-photos-sync [--index-only]"
+      echo "       omarchy-icloud-photos-sync --convert ID [ID...]"
+      echo "       omarchy-icloud-photos-sync --convert-all [--force]"
+      exit 0 ;;
+    *)
+      # A bare word after --convert is another id, wherever it appears.
+      if [ "$mode" = convert ]; then
+        convert_ids+=("$1")
+      else
+        echo "omarchy-icloud-photos-sync: unknown argument: $1" >&2
+        exit 2
+      fi ;;
+  esac
+  shift
+done
+
+# One run at a time. Converting keeps its own lock: it never downloads, so it
+# is free to run while a sync is still pulling files down.
+if [ "$mode" = sync ]; then
+  exec 9>"$CACHE/lock"
+else
+  exec 9>"$CACHE/lock.convert"
+fi
 if ! flock -n 9; then
   echo "omarchy-icloud-photos-sync: already running" >&2
   exit 0
 fi
 
-skip_download=0
-# A demo library (see omarchy-icloud-photos-demo) has nothing to download.
-[ "${DEMO:-0}" = 1 ] && skip_download=1
-for arg in "$@"; do
-  case "$arg" in
-    --index-only) skip_download=1 ;;
-    -h|--help)
-      echo "usage: omarchy-icloud-photos-sync [--index-only]"
-      exit 0 ;;
+# iPhone video is HLG (or PQ) in BT.2020. Qt's video player does no tone
+# mapping, so those play with a washed-out pink cast. For them the viewer
+# gets an SDR H.264 copy in the cache; the original is never touched.
+#
+# Converting is the slow half of the job even on the GPU, and minutes of
+# every core without one, so the sync never starts one by itself: it marks
+# the item needs_sdr and the viewer asks for it by id.
+is_hdr() {
+  case "$(ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer -of csv=p=0 "$1" 2>/dev/null | tr -d ",")" in
+    arib-std-b67|smpte2084) return 0 ;;
   esac
-done
+  return 1
+}
+make_sdr() {
+  # make_sdr SRC OUT
+  local src="$1" out="$2" tmp="$2.tmp.mp4"
+
+  # Try Intel QSV hardware acceleration (GPU decode, tone-map, scale, and encode)
+  if ffmpeg -v error -y -hwaccel qsv -hwaccel_output_format qsv -c:v hevc_qsv -i "$src" \
+      -vf "vpp_qsv=w='if(gt(iw,ih),min(${PREVIEW_SIZE},iw),-1)':h='if(gt(iw,ih),-1,min(${PREVIEW_SIZE},ih))':format=nv12:out_color_matrix=bt709:out_color_primaries=bt709:out_color_transfer=bt709:tonemap=1" \
+      -c:v h264_qsv -global_quality 25 -c:a aac -b:a 128k -movflags +faststart "$tmp" 2>/dev/null; then
+    mv "$tmp" "$out"
+    return 0
+  fi
+  rm -f "$tmp"
+
+  # Fall back to software zscale / libx264
+  ffmpeg -v error -y -i "$src" \
+    -vf "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w='if(gt(iw,ih),min(${PREVIEW_SIZE},iw),-2)':h='if(gt(iw,ih),-2,min(${PREVIEW_SIZE},ih))'" \
+    -c:v libx264 -preset veryfast -crf 23 -maxrate 8M -bufsize 16M \
+    -c:a aac -b:a 128k -movflags +faststart "$tmp" && mv "$tmp" "$out"
+}
+
+# Asking a video for its colour transfer and duration is two ffprobe runs, and
+# the index is rebuilt every 20 seconds while a download is in flight. The
+# answers only change when the file does, so they are kept against its mtime
+# and size.
+declare -A probe_cache=()
+declare -A probe_seen=()
+
+load_probe_cache() {
+  local val meta path
+  probe_cache=()
+  [ -s "$CACHE/probe.tsv" ] || return 0
+  # path is read last, so a tab inside a filename stays with it.
+  while IFS=$'\t' read -r val meta path; do
+    [ -n "$path" ] && probe_cache["$path"]="$meta $val"
+  done < "$CACHE/probe.tsv"
+}
+
+save_probe_cache() {
+  local path entry
+  : > "$CACHE/probe.tsv.tmp"
+  for path in "${!probe_seen[@]}"; do
+    entry="${probe_cache[$path]:-}"
+    [ -n "$entry" ] || continue
+    printf '%s\t%s\t%s\n' "${entry#* }" "${entry%% *}" "$path"
+  done >> "$CACHE/probe.tsv.tmp"
+  mv "$CACHE/probe.tsv.tmp" "$CACHE/probe.tsv"
+}
+
+# probe_video PATH -- sets probe_hdr (0/1) and probe_duration (whole seconds)
+probe_video() {
+  local f="$1" meta entry
+  meta="$(stat -c '%Y:%s' "$f")"
+  entry="${probe_cache[$f]:-}"
+  probe_seen["$f"]=1
+  if [ -n "$entry" ] && [ "${entry%% *}" = "$meta" ]; then
+    entry="${entry#* }"
+    probe_hdr="${entry%%:*}"
+    probe_duration="${entry##*:}"
+    return 0
+  fi
+  if is_hdr "$f"; then probe_hdr=1; else probe_hdr=0; fi
+  probe_duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f" 2>/dev/null | cut -d. -f1)
+  probe_duration=${probe_duration:-0}
+  probe_cache["$f"]="$meta $probe_hdr:$probe_duration"
+}
+load_probe_cache
 
 # --- Build the index -------------------------------------------------------
 # Everything currently on disk within the window becomes index.json. Called
 # repeatedly while icloudpd is still downloading, so the grid fills up as
 # files arrive, and once more at the end.
 #
-# build_index quick  skips the slow SDR conversion of HDR videos (they play
-#                    from the original for now) so the first index is fast
-# build_index        converts what still needs it and rebuilds everything
+# An HDR video with no SDR copy yet is indexed as needs_sdr: it still plays,
+# from the original, and the viewer offers to convert it.
 build_index() {
-  local mode="${1:-full}"
+  probe_seen=()
 
   # --- Build the index -------------------------------------------------------
   # icloudpd sets each file's mtime to the asset's capture time, so mtime is
@@ -101,34 +211,6 @@ build_index() {
       -vf "scale=${THUMB_SIZE}:${THUMB_SIZE}:force_original_aspect_ratio=increase,crop=${THUMB_SIZE}:${THUMB_SIZE}" \
       "$2" 2>/dev/null || ffmpeg -v error -y -i "$1" -frames:v 1 \
       -vf "scale=${THUMB_SIZE}:${THUMB_SIZE}:force_original_aspect_ratio=increase,crop=${THUMB_SIZE}:${THUMB_SIZE}" "$2"
-  }
-  # iPhone video is HLG (or PQ) in BT.2020. Qt's video player does no tone
-  # mapping, so those play with a washed-out pink cast. For them the viewer
-  # gets an SDR H.264 copy in the cache; the original is never touched.
-  is_hdr() {
-    case "$(ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer -of csv=p=0 "$1" 2>/dev/null | tr -d ",")" in
-      arib-std-b67|smpte2084) return 0 ;;
-    esac
-    return 1
-  }
-  make_sdr() {
-    # make_sdr SRC OUT
-    local src="$1" out="$2" tmp="$2.tmp.mp4"
-
-    # Try Intel QSV hardware acceleration (GPU decode, tone-map, scale, and encode)
-    if ffmpeg -v error -y -hwaccel qsv -hwaccel_output_format qsv -c:v hevc_qsv -i "$src" \
-        -vf "vpp_qsv=w='if(gt(iw,ih),min(${PREVIEW_SIZE},iw),-1)':h='if(gt(iw,ih),-1,min(${PREVIEW_SIZE},ih))':format=nv12:out_color_matrix=bt709:out_color_primaries=bt709:out_color_transfer=bt709:tonemap=1" \
-        -c:v h264_qsv -global_quality 25 -c:a aac -b:a 128k -movflags +faststart "$tmp" 2>/dev/null; then
-      mv "$tmp" "$out"
-      return 0
-    fi
-    rm -f "$tmp"
-
-    # Fall back to software zscale / libx264
-    ffmpeg -v error -y -i "$src" \
-      -vf "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w='if(gt(iw,ih),min(${PREVIEW_SIZE},iw),-2)':h='if(gt(iw,ih),-2,min(${PREVIEW_SIZE},ih))'" \
-      -c:v libx264 -preset veryfast -crf 23 -maxrate 8M -bufsize 16M \
-      -c:a aac -b:a 128k -movflags +faststart "$tmp" && mv "$tmp" "$out"
   }
   make_preview() {
     magick "$1" -auto-orient -resize "${PREVIEW_SIZE}x${PREVIEW_SIZE}>" -quality 90 "$2"
@@ -171,20 +253,20 @@ build_index() {
     video=""
     duration=0
 
+    needs_sdr=false
     if [ "$kind" = video ]; then
+      probe_video "$f"
+      duration="$probe_duration"
       video="$f"
-      if is_hdr "$f"; then
+      if [ "$probe_hdr" = 1 ]; then
         sdr="$VIDEOS/$key.mp4"
         if fresh "$f" "$sdr"; then
           video="$sdr"
-        elif [ "$mode" = full ]; then
-          # A fresh SDR copy also means a fresh, correctly coloured thumbnail.
-          if make_sdr "$f" "$sdr"; then video="$sdr"; rm -f "$thumb"; else echo "sdr failed: $f" >&2; fi
+        else
+          needs_sdr=true
         fi
       fi
       fresh "$f" "$thumb" || make_video_thumb "$video" "$thumb" || { echo "thumb failed: $f" >&2; continue; }
-      duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f" 2>/dev/null | cut -d. -f1)
-      duration=${duration:-0}
       preview="$thumb"
     else
       fresh "$f" "$thumb" || make_thumb "$f" "$thumb" || { echo "thumb failed: $f" >&2; continue; }
@@ -202,15 +284,20 @@ build_index() {
     fi
 
     ts=$(stat -c %Y "$f")
+    # printf's %(...)T, not two date(1) forks per item.
+    printf -v day '%(%F)T' "$ts"
+    printf -v hhmm '%(%H:%M)T' "$ts"
     shared=false
     [[ "$f" == "$SHARED_DIR/"* ]] && shared=true
     items+=("$(jq -cn \
       --arg id "$key" --arg path "$f" --arg name "$name" --arg kind "$kind" \
       --arg thumb "$thumb" --arg preview "$preview" --arg video "$video" \
       --argjson ts "$ts" --argjson duration "${duration:-0}" --argjson shared "$shared" \
-      --arg date "$(date -d "@$ts" +%F)" --arg time "$(date -d "@$ts" +%H:%M)" \
+      --argjson needs_sdr "$needs_sdr" \
+      --arg date "$day" --arg time "$hhmm" \
       '{id: $id, path: $path, name: $name, kind: $kind, thumb: $thumb, preview: $preview,
-        video: $video, ts: $ts, duration: $duration, date: $date, time: $time, shared: $shared}')")
+        video: $video, ts: $ts, duration: $duration, date: $date, time: $time, shared: $shared,
+        needs_sdr: $needs_sdr}')")
     keep+=("$key")
     count=$((count + 1))
   done
@@ -218,6 +305,8 @@ build_index() {
   # Oldest first: the grid reads like the iPhone Photos app, newest at the bottom.
   printf '%s\n' "${items[@]}" | jq -s 'sort_by(.ts)' > "$INDEX.tmp"
   mv "$INDEX.tmp" "$INDEX"
+
+  save_probe_cache
 
   # Drop cached thumbnails of items that fell outside the window.
   if [ "${#keep[@]}" -gt 0 ]; then
@@ -258,7 +347,7 @@ download() {
   while kill -0 "$dl" 2>/dev/null; do
     for _ in $(seq 1 20); do kill -0 "$dl" 2>/dev/null || break; sleep 1; done
     kill -0 "$dl" 2>/dev/null || break
-    build_index quick
+    build_index
     write_status syncing "Downloading $label" "$count"
   done
   set +e
@@ -296,6 +385,64 @@ shared_libraries() {
   cat "$LIBRARIES"
 }
 
+# True on mains, false on battery. A machine with no mains adapter at all
+# (a desktop) counts as mains.
+on_ac() {
+  local f found=0
+  for f in "${POWER_SUPPLY:-/sys/class/power_supply}"/*/online; do
+    [ -r "$f" ] || continue
+    found=1
+    [ "$(cat "$f")" = 1 ] && return 0
+  done
+  [ "$found" = 0 ]
+}
+
+# --- Convert on request -----------------------------------------------------
+# The slow half of the job, kept behind an explicit ask. Nothing here
+# downloads; it only builds the SDR copies the viewer requested by id.
+convert_one() {
+  # convert_one ID
+  local id="$1" path sdr
+  path=$(jq -r --arg id "$id" 'map(select(.id == $id)) | .[0].path // empty' "$INDEX" 2>/dev/null || true)
+  if [ -z "$path" ] || [ ! -f "$path" ]; then
+    echo "omarchy-icloud-photos-sync: no such item: $id" >&2
+    return 1
+  fi
+  sdr="$VIDEOS/$id.mp4"
+  # Already converted, and the original has not changed under it.
+  if [ -s "$sdr" ] && [ ! "$path" -nt "$sdr" ]; then return 0; fi
+  make_sdr "$path" "$sdr" || { echo "sdr failed: $path" >&2; return 1; }
+  # A fresh SDR copy is also the correctly coloured source for the thumbnail.
+  rm -f "$THUMBS/$id.jpg"
+}
+
+if [ "$mode" != sync ]; then
+  # One clip on request is the user's call either way; the whole backlog is
+  # not something to start on battery.
+  if [ "$mode" = convert-all ] && [ "$force" != 1 ] && ! on_ac; then
+    echo "omarchy-icloud-photos-sync: on battery, so the backlog is left alone." >&2
+    echo "Plug in, or pass --force." >&2
+    exit 1
+  fi
+  if [ "$mode" = convert-all ]; then
+    mapfile -t convert_ids < <(jq -r '.[] | select(.needs_sdr == true) | .id' "$INDEX" 2>/dev/null || true)
+  fi
+  total="${#convert_ids[@]}"
+  if [ "$total" -eq 0 ]; then
+    echo "omarchy-icloud-photos-sync: nothing to convert"
+    exit 0
+  fi
+  failed=0
+  for i in "${!convert_ids[@]}"; do
+    write_status converting "Converting video $((i + 1)) of $total" "$total"
+    convert_one "${convert_ids[$i]}" || failed=$((failed + 1))
+  done
+  build_index
+  write_status ok "" "$count"
+  echo "omarchy-icloud-photos-sync: converted $((total - failed)) of $total video(s)"
+  exit 0
+fi
+
 if [ "$skip_download" = 0 ]; then
   : > "$LOG"
   download "from iCloud" "$LIBRARY"
@@ -305,10 +452,7 @@ if [ "$skip_download" = 0 ]; then
   done < <(shared_libraries)
 fi
 
-# Quick pass first so the grid is complete right away, then the HDR videos.
 write_status indexing "Building thumbnails"
-build_index quick
-write_status indexing "Converting HDR videos" "$count"
 build_index
 write_status ok "" "$count"
 echo "omarchy-icloud-photos-sync: $count items in the last $DAYS days"

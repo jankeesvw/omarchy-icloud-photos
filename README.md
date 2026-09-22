@@ -39,7 +39,7 @@ git clone https://github.com/jankeesvw/omarchy-icloud-photos.git ~/Documents/git
 The installer links the launcher and the sync script into `~/.local/bin`, adds "Omarchy iCloud Photos" to the app launcher, fetches the icloudpd binary into `~/.local/bin` when it is not installed already, creates a small Python virtualenv for the iCloud helper (a 3.13 from mise when the system Python is newer) and enables the sync timer. Nothing after the pacman line needs root.
 
 Then start `omarchy-icloud-photos`, or pick "Omarchy iCloud Photos" in the launcher, and sign in. Apple ID and password first, then the six-digit code from your phone.
- The first sync takes a few minutes; HDR videos take the longest because each one gets a tone-mapped copy for playback. Run `install.sh` again after a `git pull`; everything is linked, not copied.
+ The first sync takes a few minutes. Run `install.sh` again after a `git pull`; everything is linked, not copied.
 
 </details>
 
@@ -53,7 +53,7 @@ Apple does not make an iCloud Photos client for Linux, and the web app is a brow
 
 - **Grid by day.** The last month of photos, videos and Live Photos, grouped by day with the newest at the bottom. Thumbnails scale with a slider.
 - **Shared Library too.** If your account is in an iCloud Shared Library, its last month is in the same grid, each item with a small person mark top-right, like the Photos app. Delete and undo work there as well, for everyone in the library.
-- **Viewer.** Full-window stills, video with a timeline you can scrub, Live Photos that play once when you hover the little circle, like on the phone. `i` shows camera, lens, shutter, ISO, size and location. iPhone videos are HDR and most Linux players show them washed out; here they look right.
+- **Viewer.** Full-window stills, video with a timeline you can scrub, Live Photos that play once when you hover the little circle, like on the phone. `i` shows camera, lens, shutter, ISO, size and location. iPhone videos are HDR and most Linux players show them washed out; **Fix colour** on the picture builds an SDR copy so they look right. It is offered, not taken: nothing converts until you ask.
 - **Delete with undo.** `d` moves an item, or a selection, to iCloud's Recently Deleted, the same 30-day bin the Photos app uses. Undo brings it back, from the toast or with `u`. Nothing here can empty that bin.
 - **Copy and save.** `y` puts the image on the clipboard, or a file list when several are selected. `s` and the Download button save a copy to `~/Downloads` as JPEG or MP4, whatever the original was. Clicking the filename copies its full path.
 - **Signs in by itself.** Apple ID, password and the two-factor code go into the window on first run and whenever the session expires. The password is only used to open the session and is never stored.
@@ -92,7 +92,7 @@ The window is the only new thing here; the plumbing is existing, well-worn tools
 - **pyicloud**, the module that ships inside icloudpd, handles sign-in with two-factor and the per-asset delete and restore, from a small Python helper in the repository's own virtualenv.
 - **bash and jq** build the index: one JSON file listing every item in the range with its thumbnail, preview, video and capture time.
 - **ImageMagick** with libheif makes the thumbnails and the JPEG previews of HEIC originals, which Qt cannot decode.
-- **ffmpeg** grabs video poster frames and tone-maps HDR videos (HLG and PQ) to SDR H.264 copies for playback, since Qt's player does no tone mapping.
+- **ffmpeg** grabs video poster frames and, when you ask for it, tone-maps an HDR video (HLG or PQ) to an SDR H.264 copy for playback, since Qt's player does no tone mapping.
 - **[Quickshell](https://quickshell.org)** on Qt 6 renders the window in QML, with QtMultimedia for video.
 - **systemd** user units run the sync every 30 minutes at low priority.
 
@@ -138,7 +138,7 @@ A click selects, a second click on the selected item opens it. Hovering does not
 | `LIBRARY` | `~/Pictures/iCloud` | Where originals land, as `YYYY/MM/` folders; the Shared Library goes under `shared/` in it |
 | `SHARED_LIBRARY` | `auto` | `auto` syncs the Shared Library your account is in, `no` leaves it out, a `SharedSync-…` name from `icloudpd --list-libraries` picks one |
 | `COOKIES` | `~/.config/icloudpd` | Where the iCloud session lives |
-| `CACHE` | `~/.cache/omarchy-icloud-photos` | Thumbnails, previews, SDR video copies and the index |
+| `CACHE` | `~/.cache/omarchy-icloud-photos` | Thumbnails, previews, SDR video copies, the probe cache and the index |
 | `LAUNCHER_NAME` | `Omarchy iCloud Photos` | What the app is called in the launcher; re-run `install.sh` after changing it |
 
 The window covers the last month. That is a deliberate size: enough to matter, small enough that the grid stays quick and a first sync takes minutes rather than hours. The local library is never pruned, so nothing on disk goes away when the month moves on.
@@ -155,7 +155,7 @@ icloudpd --auth-only --username you@example.com --cookie-directory ~/.config/icl
 
 ## How it works
 
-`bin/omarchy-icloud-photos-sync` runs icloudpd for the newest items, once for your own library and once more with `--library` for the Shared Library your account is in (looked up with `--list-libraries` once a day and landing under `shared/`), then indexes every file in the library from the last month. Capture time is the file's mtime, which icloudpd sets to the asset's creation date. Each item gets a 400 px thumbnail; HEIC also gets a 2200 px JPEG preview because Qt cannot decode HEIC. A Live Photo's `_HEVC.MOV` companion folds into its still. HDR videos get a tone-mapped H.264 copy for playback; the original stays untouched and is what `o`, `s` and `Y` refer to. The result is `index.json` and `status.json` in the cache; the window watches both.
+`bin/omarchy-icloud-photos-sync` runs icloudpd for the newest items, once for your own library and once more with `--library` for the Shared Library your account is in (looked up with `--list-libraries` once a day and landing under `shared/`), then indexes every file in the library from the last month. Capture time is the file's mtime, which icloudpd sets to the asset's creation date. Each item gets a 400 px thumbnail; HEIC also gets a 2200 px JPEG preview because Qt cannot decode HEIC. A Live Photo's `_HEVC.MOV` companion folds into its still. An HDR video is indexed `needs_sdr` and plays from the original until you press **Fix colour** in the viewer, which runs `--convert ID` for that one item; `--convert-all` does the whole backlog, and refuses on battery unless you pass `--force`. The original stays untouched and is what `o`, `s` and `Y` refer to. The result is `index.json` and `status.json` in the cache; the window watches both.
 
 `bin/icloud_helper.py` is the only code that talks to iCloud beyond downloading: it signs in, and it moves one asset at a time to Recently Deleted or back, in whichever library it came from. The Shared Library sits in the owner's private database next to the personal one and in the shared database of everyone who joined, so the helper looks in both. It runs on the pyicloud module that ships with icloudpd, in the repository's own virtualenv.
 

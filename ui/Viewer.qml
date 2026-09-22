@@ -15,12 +15,18 @@ Rectangle {
   readonly property bool playing: video.playbackState === MediaPlayer.PlayingState
   readonly property bool hasVideo: item !== null && !!item.video
 
+  // Id of the item whose SDR copy is being built right now, "" when idle.
+  property string convertingId: ""
+  // True while any conversion is running, including one for another item.
+  property bool convertBusy: false
+
   signal requestClose()
   signal requestNext()
   signal requestPrev()
   signal requestCopyPath()
   signal requestSave()
   signal requestInfo()
+  signal requestConvert()
 
   // Details panel: rows of [label, value] from the info script.
   property bool infoOpen: false
@@ -189,6 +195,56 @@ Rectangle {
       color: "white"
       font.family: theme.fontFamily
       font.pixelSize: 14
+    }
+  }
+
+  // ---- HDR: convert when asked --------------------------------------------
+  // An iPhone HDR clip plays with a pink cast until there is an SDR copy in
+  // the cache. Building one is the slow half of a sync, so it is offered here
+  // rather than taken: the sync marks the item and leaves it alone.
+  Rectangle {
+    id: hdrButton
+    readonly property bool busy: item !== null && root.convertingId === item.id
+    // Another clip is already converting: one at a time, so this one waits.
+    readonly property bool blocked: root.convertBusy && !busy
+    visible: item !== null && item.kind === "video" && item.needs_sdr === true
+      && root.videoShown && !root.infoOpen
+    x: root.paintedVideo.x + 14
+    y: root.paintedVideo.y + 14
+    width: hdrRow.implicitWidth + 24
+    height: 32
+    radius: 16
+    color: Qt.rgba(0, 0, 0, 0.6)
+    border.color: hdrButton.busy ? theme.accent : "white"
+    border.width: 2
+    opacity: hdrButton.blocked ? 0.45 : 1
+
+    Row {
+      id: hdrRow
+      anchors.centerIn: parent
+      spacing: 8
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        text: hdrButton.busy ? "\uf110" : "\uf1fc"
+        color: hdrButton.busy ? theme.accent : "white"
+        font.family: theme.fontFamily
+        font.pixelSize: 13
+      }
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        text: hdrButton.busy ? "Converting\u2026" : "Fix colour"
+        color: hdrButton.busy ? theme.accent : "white"
+        font.family: theme.fontFamily
+        font.pixelSize: theme.fontSize
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      enabled: !hdrButton.busy && !hdrButton.blocked
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.requestConvert()
     }
   }
 
