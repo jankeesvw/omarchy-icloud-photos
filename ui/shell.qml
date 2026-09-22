@@ -223,7 +223,14 @@ ShellRoot {
       }
     }
   }
-  Process { id: copier }
+  Process {
+    id: copier
+    property string successMessage: ""
+    onExited: (code, status) => {
+      if (code === 0) toast.show(successMessage);
+      else toast.show("Could not copy to clipboard", 3000);
+    }
+  }
 
   // Re-index in the background after a delete or restore so index.json
   // matches what is on disk again; the FileView picks the result up.
@@ -418,23 +425,45 @@ ShellRoot {
     opener.running = true;
   }
 
-  function copyCurrent() {
-    var list = targets();
+  function copyTargets() {
+    return viewerOpen ? (current ? [current] : []) : targets();
+  }
+
+  function showCopyMenu(source, x, y, index) {
+    if (needLogin || helpOpen || pendingDelete) return;
+    var pos = source.mapToItem(keys, x, y);
+    if (index >= 0) {
+      pinBottom = false;
+      // Right-click keeps a checked group, or selects just the clicked photo.
+      if (checked[items[index].id]) selected = index;
+      else jumpTo(index, false);
+    }
+    // Keep the menu's target stable if a background sync rebuilds the grid.
+    copyMenu.items = copyTargets();
+    if (copyMenu.items.length > 0) copyMenu.popup(pos.x, pos.y);
+  }
+
+  function copyCurrent(list) {
+    if (copier.running) return;
+    if (!list) list = copyTargets();
     if (list.length === 0) return;
     if (list.length > 1) {
       // A list of files: file managers paste them as copies, chat apps as
       // attachments. Plain text gets the paths, one per line.
       var uris = list.map(function (it) { return "file://" + encodeURI(it.kind === "video" ? it.video : it.path); });
       copier.command = ["bash", "-c", 'printf "%s\n" "$@" | wl-copy --type text/uri-list', "_"].concat(uris);
+      copier.successMessage = "Copied " + list.length + " files";
       copier.running = true;
-      toast.show("Copied " + list.length + " files");
       return;
     }
-    var src = current.kind === "video" ? current.thumb : current.preview;
-    var mime = /\.png$/i.test(src) ? "image/png" : "image/jpeg";
-    copier.command = ["bash", "-c", 'wl-copy --type "$1" < "$2"', "_", mime, src];
+    var it = list[0];
+    // A video copies as the video. A Live Photo is a still that happens to
+    // move, so that one copies as its picture, like it does everywhere else.
+    var src = it.kind === "video" ? it.video : it.preview;
+    copier.command = [binDir + "/omarchy-icloud-photos-copy", src];
+    copier.successMessage = "Copied image to clipboard";
+    toast.show("Copying image…", 30000);
     copier.running = true;
-    toast.show("Copied to clipboard");
   }
 
   // Save to ~/Downloads in a format anything can open: HEIC becomes a
@@ -505,12 +534,13 @@ ShellRoot {
   onViewerOpenChanged: if (!viewerOpen) infoOpen = false
 
   function copyPath() {
+    if (copier.running) return;
     var list = targets();
     if (list.length === 0) return;
     var paths = list.map(function (it) { return it.path; });
     copier.command = ["bash", "-c", 'printf "%s\n" "$@" | wl-copy', "_"].concat(paths);
+    copier.successMessage = list.length === 1 ? "Copied " + paths[0] : "Copied " + list.length + " paths";
     copier.running = true;
-    toast.show(list.length === 1 ? "Copied " + paths[0] : "Copied " + list.length + " paths");
   }
 
   function startSync() {
@@ -743,6 +773,20 @@ ShellRoot {
       focus: true
       Component.onCompleted: forceActiveFocus()
 
+      Shortcut {
+        sequence: "Ctrl+C"
+        context: Qt.WindowShortcut
+        enabled: !root.needLogin && !root.helpOpen && !root.pendingDelete && !copyMenu.visible && root.current !== null
+        onActivated: root.copyCurrent()
+      }
+
+      CopyMenu {
+        id: copyMenu
+        theme: appTheme
+        onRequestCopy: items => root.copyCurrent(items)
+        onClosed: keys.forceActiveFocus()
+      }
+
       Keys.onPressed: event => {
         var k = event.key;
         var t = event.text;
@@ -775,9 +819,9 @@ ShellRoot {
           if (t === "i") root.toggleInfo()
           else if ((k === Qt.Key_Escape || t === "q") && root.infoOpen) root.infoOpen = false
           else if (k === Qt.Key_Escape || t === "q" || k === Qt.Key_Backspace) root.viewerOpen = false
-          // Arrows scrub while a video is on screen; h/l always move on.
-          else if (k === Qt.Key_Left && viewer.videoShown) viewer.seekBy(-5000)
-          else if (k === Qt.Key_Right && viewer.videoShown) viewer.seekBy(5000)
+          // Shift+Arrows scrub video; plain arrows navigate to previous/next photo or video
+          else if (shift && k === Qt.Key_Left && viewer.videoShown) viewer.seekBy(-5000)
+          else if (shift && k === Qt.Key_Right && viewer.videoShown) viewer.seekBy(5000)
           else if (k === Qt.Key_Left || t === "h" || t === "k" || k === Qt.Key_Up) root.move(-1)
           else if (k === Qt.Key_Right || t === "l" || t === "j" || k === Qt.Key_Down) root.move(1)
           else if (k === Qt.Key_Space) viewer.togglePlay()
@@ -794,8 +838,10 @@ ShellRoot {
         else if (k === Qt.Key_Right || k === Qt.Key_L) root.move(1, shift)
         else if (k === Qt.Key_Down || k === Qt.Key_J) root.move(grid.columns, shift)
         else if (k === Qt.Key_Up || k === Qt.Key_K) root.move(-grid.columns, shift)
-        else if (t === "g") { root.jumpTo(root.items.length > 0 ? 0 : -1, false); }
-        else if (t === "G") { root.jumpTo(root.items.length - 1, false); root.pinBottom = true; grid.scrollToBottom(); }
+        else if (k === Qt.Key_PageDown) root.move(grid.columns * 3, shift)
+        else if (k === Qt.Key_PageUp) root.move(-grid.columns * 3, shift)
+        else if (k === Qt.Key_Home || t === "g") { root.jumpTo(root.items.length > 0 ? 0 : -1, false); }
+        else if (k === Qt.Key_End || t === "G") { root.jumpTo(root.items.length - 1, false); root.pinBottom = true; grid.scrollToBottom(); }
         else if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) { if (root.current) root.viewerOpen = true; }
         else if (t === "o") root.openCurrent()
         else if (t === "y") root.copyCurrent()
@@ -930,6 +976,11 @@ ShellRoot {
         }
 
         readonly property int columns: Math.max(1, Math.floor((width - 40 + root.gap) / (root.cell + root.gap)))
+        // The slider sets the size to aim for; the row then divides the width
+        // it actually has between that many tiles, so both edges stay flush
+        // whatever the window does and resizing only changes the tiles a
+        // little rather than leaving a ragged strip on the right.
+        readonly property real cellFit: (width - 40 - (columns - 1) * root.gap) / columns
 
         // Scroll position to hold while a rebuild changes the content height.
         property real restoreY: -1
@@ -994,12 +1045,13 @@ ShellRoot {
                     index: modelData
                     item: root.items[modelData]
                     theme: appTheme
-                    size: root.cell
+                    size: grid.cellFit
                     selected: root.selected === modelData
                     // items[] can be a step behind the model while a delete
                     // rebuilds the grid, hence the guard.
                     checked: !!root.items[modelData] && root.checked[root.items[modelData].id] === true
                     onSelectedChanged: if (selected) grid.reveal(this)
+                    onContextMenuRequested: (x, y) => root.showCopyMenu(this, x, y, index)
                     // Click selects, a click on the selected one opens.
                     // Shift-click checks the range from the anchor, ctrl-click
                     // toggles one.
@@ -1170,6 +1222,7 @@ ShellRoot {
         onRequestPrev: root.move(-1)
         onRequestCopyPath: root.copyPath()
         onRequestSave: root.saveToDownloads()
+        onContextMenuRequested: (x, y) => root.showCopyMenu(viewer, x, y, -1)
       }
 
       // ---- Sign-in ----------------------------------------------------------

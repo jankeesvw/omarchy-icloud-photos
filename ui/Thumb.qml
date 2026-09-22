@@ -9,11 +9,14 @@ Rectangle {
   required property var theme
   property var item: null
   property int index: -1
-  property int size: 176
+  // Real, not int: the grid divides the row between its tiles and the result
+  // rarely lands on a whole pixel.
+  property real size: 176
   property bool selected: false
   property bool checked: false
 
   signal clicked(int modifiers)
+  signal contextMenuRequested(real x, real y)
 
   width: size
   height: size
@@ -31,8 +34,6 @@ Rectangle {
     sourceSize.width: 400
     sourceSize.height: 400
     smooth: true
-    layer.enabled: true
-    layer.effect: null
   }
 
   function fmtDuration(s) {
@@ -136,6 +137,10 @@ Rectangle {
     anchors.fill: parent
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
-    onClicked: mouse => root.clicked(mouse.modifiers)
+    acceptedButtons: Qt.LeftButton | Qt.RightButton
+    onClicked: mouse => {
+      if (mouse.button === Qt.RightButton) root.contextMenuRequested(mouse.x, mouse.y);
+      else root.clicked(mouse.modifiers);
+    }
   }
 }

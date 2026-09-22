@@ -21,6 +21,7 @@ Rectangle {
   signal requestCopyPath()
   signal requestSave()
   signal requestInfo()
+  signal contextMenuRequested(real x, real y)
 
   // Details panel: rows of [label, value] from the info script.
   property bool infoOpen: false
@@ -74,6 +75,9 @@ Rectangle {
     anchors.fill: parent
     hoverEnabled: true
     acceptedButtons: Qt.AllButtons
+    onClicked: mouse => {
+      if (mouse.button === Qt.RightButton) root.contextMenuRequested(mouse.x, mouse.y);
+    }
     onWheel: wheel => {
       if (wheel.angleDelta.y < 0) root.requestNext(); else root.requestPrev();
       wheel.accepted = true;
