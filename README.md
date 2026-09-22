@@ -83,10 +83,6 @@ Every picture here is the whole window, taken from the demo library.
 <td><img src="assets/video.jpg" alt="A video in the viewer with the timeline underneath"><br><sub>Video with a timeline to scrub. HDR from the phone plays with the right colours.</sub></td>
 <td><img src="assets/signin.jpg" alt="The sign-in card asking for the verification code"><br><sub>Sign-in lives in the window: Apple ID, password, then the six-digit code.</sub></td>
 </tr>
-<tr>
-<td><img src="assets/allow-access.jpg" alt="The card asking you to allow access on your iPhone"><br><sub>With Advanced Data Protection, tap Allow Access on a trusted device. The grant lasts about a month.</sub></td>
-<td></td>
-</tr>
 </table>
 
 ## Built on
