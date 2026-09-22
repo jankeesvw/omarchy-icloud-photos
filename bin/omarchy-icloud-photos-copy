@@ -13,5 +13,6 @@ fi
 # leave the previous clipboard intact. Only the first frame of a GIF is used.
 image=$(mktemp --suffix=.png)
 trap 'rm -f "$image"' EXIT
-magick "$1[0]" -auto-orient -strip "png:$image"
+# Use fast lossless PNG compression for interactive copy.
+magick "$1[0]" -auto-orient -strip -define png:compression-level=1 "png:$image"
 wl-copy --type image/png < "$image"
