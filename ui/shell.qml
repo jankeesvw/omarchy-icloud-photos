@@ -402,8 +402,23 @@ ShellRoot {
     return viewerOpen ? (current ? [current] : []) : targets();
   }
 
-  function copyCurrent() {
-    var list = copyTargets();
+  function showCopyMenu(source, x, y, index) {
+    if (needLogin || helpOpen || pendingDelete) return;
+    var pos = source.mapToItem(keys, x, y);
+    if (index >= 0) {
+      pinBottom = false;
+      // Right-click keeps a checked group, or selects just the clicked photo.
+      if (checked[items[index].id]) selected = index;
+      else jumpTo(index, false);
+    }
+    // Keep the menu's target stable if a background sync rebuilds the grid.
+    copyMenu.items = copyTargets();
+    if (copyMenu.items.length > 0) copyMenu.popup(pos.x, pos.y);
+  }
+
+  function copyCurrent(list) {
+    if (copier.running) return;
+    if (!list) list = copyTargets();
     if (list.length === 0) return;
     if (list.length > 1) {
       // A list of files: file managers paste them as copies, chat apps as
@@ -728,6 +743,20 @@ ShellRoot {
       focus: true
       Component.onCompleted: forceActiveFocus()
 
+      Shortcut {
+        sequence: "Ctrl+C"
+        context: Qt.WindowShortcut
+        enabled: !root.needLogin && !root.helpOpen && !root.pendingDelete && !copyMenu.visible && root.current !== null
+        onActivated: root.copyCurrent()
+      }
+
+      CopyMenu {
+        id: copyMenu
+        theme: appTheme
+        onRequestCopy: items => root.copyCurrent(items)
+        onClosed: keys.forceActiveFocus()
+      }
+
       Keys.onPressed: event => {
         var k = event.key;
         var t = event.text;
@@ -985,6 +1014,7 @@ ShellRoot {
                     // rebuilds the grid, hence the guard.
                     checked: !!root.items[modelData] && root.checked[root.items[modelData].id] === true
                     onSelectedChanged: if (selected) grid.reveal(this)
+                    onContextMenuRequested: (x, y) => root.showCopyMenu(this, x, y, index)
                     // Click selects, a click on the selected one opens.
                     // Shift-click checks the range from the anchor, ctrl-click
                     // toggles one.
@@ -1155,6 +1185,7 @@ ShellRoot {
         onRequestPrev: root.move(-1)
         onRequestCopyPath: root.copyPath()
         onRequestSave: root.saveToDownloads()
+        onContextMenuRequested: (x, y) => root.showCopyMenu(viewer, x, y, -1)
       }
 
       // ---- Sign-in ----------------------------------------------------------

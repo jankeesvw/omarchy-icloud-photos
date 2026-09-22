@@ -55,7 +55,7 @@ Apple does not make an iCloud Photos client for Linux, and the web app is a brow
 - **Shared Library too.** If your account is in an iCloud Shared Library, its last month is in the same grid, each item with a small person mark top-right, like the Photos app. Delete and undo work there as well, for everyone in the library.
 - **Viewer.** Full-window stills, video with a timeline you can scrub, Live Photos that play once when you hover the little circle, like on the phone. `i` shows camera, lens, shutter, ISO, size and location. iPhone videos are HDR and most Linux players show them washed out; here they look right.
 - **Delete with undo.** `d` moves an item, or a selection, to iCloud's Recently Deleted, the same 30-day bin the Photos app uses. Undo brings it back, from the toast or with `u`. Nothing here can empty that bin.
-- **Copy and save.** `y` puts the image on the clipboard, or a file list when several are selected. `s` and the Download button save a copy to `~/Downloads` as JPEG or MP4, whatever the original was. Clicking the filename copies its full path.
+- **Copy and save.** `Ctrl+C`, `y`, or right-click → Copy puts the image on the clipboard from either the grid or the viewer. Multiple selections in the grid copy as a file list; the viewer copies the opened image. Right-clicking a selected photo keeps the selection, while right-clicking another photo selects that one. `s` and the Download button save a copy to `~/Downloads` as JPEG or MP4, whatever the original was. Clicking the filename copies its full path.
 - **Signs in by itself.** Apple ID, password and the two-factor code go into the window on first run and whenever the session expires. The password is only used to open the session and is never stored.
 - **Wallpaper.** `W` makes the current photo the Omarchy background, HEIC included.
 - **Stays in sync.** A systemd user timer pulls new items every 30 minutes. An open window picks them up on its own.
@@ -115,7 +115,9 @@ Press `?` in the app for this list.
 | `Enter`, `Space` | open the viewer | pause or resume a video, play a Live Photo once |
 | `←` / `→` | move | seek 5 seconds |
 | `d` / `u` | delete, undo | same |
-| `y` / `Y` | copy image or files, copy path | same |
+| `Ctrl+C` / `y` | copy image or selected files | copy opened image |
+| right-click → Copy | copy image or selected files | copy opened image |
+| `Y` | copy path | same |
 | `s` | save to `~/Downloads` as JPEG or MP4 | same |
 | `o` | open in the default app | same |
 | `W` | set as the Omarchy wallpaper | same |

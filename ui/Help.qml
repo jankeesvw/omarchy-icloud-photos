@@ -27,7 +27,8 @@ Rectangle {
       ["d", "move to Recently Deleted"],
       ["u", "undo the last delete"],
       ["o", "open in the default app"],
-      ["y", "copy the image, or the files"],
+      ["ctrl + c  y", "copy the image, or the files"],
+      ["right-click", "open the Copy menu"],
       ["Y", "copy the path"],
       ["s", "save to ~/Downloads as JPEG or MP4"],
       ["W", "set as the Omarchy wallpaper"]
