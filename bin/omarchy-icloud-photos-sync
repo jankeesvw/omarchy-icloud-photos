@@ -11,6 +11,9 @@
 # LIBRARY/shared, and its items carry a person mark in the grid.
 set -euo pipefail
 umask 077
+# A package ships its own icloudpd next to this script; a checkout finds the
+# one install.sh put in ~/.local/bin.
+PATH="$(dirname "$(readlink -f "$0")"):$PATH"
 
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-icloud-photos/config"
 [ -f "$CONFIG" ] && . "$CONFIG"

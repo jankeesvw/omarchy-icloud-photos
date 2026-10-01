@@ -224,6 +224,12 @@ ShellRoot {
       }
     }
   }
+  // The sync timer goes on at the first sign-in. install.sh already enables
+  // it; a package cannot, since it is a per-user unit.
+  Process {
+    id: timerEnabler
+    command: ["systemctl", "--user", "enable", "--now", "omarchy-icloud-photos-sync.timer"]
+  }
   Process {
     id: copier
     property string successMessage: ""
@@ -352,6 +358,7 @@ ShellRoot {
       toast.show("Signed in as " + msg.username);
       keys.forceActiveFocus();
       startSync();
+      timerEnabler.running = true;
     } else if (msg.error) {
       loginCard.busy = false;
       loginCard.error = msg.error;

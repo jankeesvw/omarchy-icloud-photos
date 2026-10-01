@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Run the trash helper inside the repository's own virtualenv (see install.sh).
+# A package has no virtualenv: it ships pyicloud_ipd in lib/ and uses the
+# system python instead.
 set -euo pipefail
 umask 077
 dir="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-[ -x "$dir/.venv/bin/python" ] || { echo '{"ok": false, "error": "run install.sh first: .venv is missing"}'; exit 1; }
-exec "$dir/.venv/bin/python" "$dir/bin/icloud_helper.py" "$@"
+if [ -x "$dir/.venv/bin/python" ]; then
+  exec "$dir/.venv/bin/python" "$dir/bin/icloud_helper.py" "$@"
+fi
+[ -d "$dir/lib" ] || { echo '{"ok": false, "error": "run install.sh first: .venv is missing"}'; exit 1; }
+export PYTHONPATH="$dir/lib${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 "$dir/bin/icloud_helper.py" "$@"
