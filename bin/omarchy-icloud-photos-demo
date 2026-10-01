@@ -57,10 +57,11 @@ else
   flat() { [ "$(magick "$1" -colorspace Gray -format '%[fx:standard_deviation<0.06?1:0]' info:)" = 1 ]; }
 
   # Give a demo photo the EXIF an iPhone would, so the details panel has
-  # something to show. Uses piexif from the helper's virtualenv.
+  # something to show. Uses piexif from the helper's virtualenv, or the
+  # system one when a package installed it.
   tag() {
     local py="$(dirname "$(readlink -f "$0")")/../.venv/bin/python"
-    [ -x "$py" ] || return 0
+    [ -x "$py" ] || py=python3
     "$py" - "$1" "$2" <<'PY' 2>/dev/null || true
 import sys, piexif, random
 path, seed = sys.argv[1], int(sys.argv[2])
