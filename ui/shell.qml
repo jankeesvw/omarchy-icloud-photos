@@ -230,6 +230,9 @@ ShellRoot {
     id: timerEnabler
     command: ["systemctl", "--user", "enable", "--now", "omarchy-icloud-photos-sync.timer"]
   }
+  // Every copy command runs under setsid: wl-copy stays behind to serve the
+  // clipboard, and without its own session it dies when the app quits, so
+  // copy-then-close left nothing to paste.
   Process {
     id: copier
     property string successMessage: ""
@@ -484,7 +487,7 @@ ShellRoot {
       // A list of files: file managers paste them as copies, chat apps as
       // attachments. Plain text gets the paths, one per line.
       var uris = list.map(function (it) { return "file://" + encodeURI(it.kind === "video" ? it.video : it.path); });
-      copier.command = ["bash", "-c", 'printf "%s\n" "$@" | wl-copy --type text/uri-list', "_"].concat(uris);
+      copier.command = ["setsid", "bash", "-c", 'printf "%s\n" "$@" | wl-copy --type text/uri-list', "_"].concat(uris);
       copier.successMessage = "Copied " + list.length + " files";
       copier.running = true;
       return;
@@ -493,7 +496,7 @@ ShellRoot {
     // A video copies as the video. A Live Photo is a still that happens to
     // move, so that one copies as its picture, like it does everywhere else.
     var src = it.kind === "video" ? it.video : it.preview;
-    copier.command = [binDir + "/omarchy-icloud-photos-copy", src];
+    copier.command = ["setsid", binDir + "/omarchy-icloud-photos-copy", src];
     copier.successMessage = "Copied image to clipboard";
     toast.show("Copying image…", 30000);
     copier.running = true;
@@ -571,7 +574,7 @@ ShellRoot {
     var list = targets();
     if (list.length === 0) return;
     var paths = list.map(function (it) { return it.path; });
-    copier.command = ["bash", "-c", 'printf "%s\n" "$@" | wl-copy', "_"].concat(paths);
+    copier.command = ["setsid", "bash", "-c", 'printf "%s\n" "$@" | wl-copy', "_"].concat(paths);
     copier.successMessage = list.length === 1 ? "Copied " + paths[0] : "Copied " + list.length + " paths";
     copier.running = true;
   }
