@@ -228,10 +228,19 @@ _build_index() {
 
   mapfile -d '' files < <(find "$LIBRARY" -type f -newermt "@$cutoff" -print0 | sort -z)
 
-  declare -A present=()   # basename without extension -> path, for live pairs
+  # A Live Photo's motion half sits next to its still. icloudpd names it
+  # X_HEVC.MOV when the still is X.HEIC, and plain X.MOV when the still is
+  # X.JPG (an iPhone set to Most Compatible), so the two halves are matched by
+  # the still's name, kept in separate maps because X.JPG and X.MOV share a
+  # basename.
+  declare -A stills=() motions=()   # still's basename without extension -> path
   for f in "${files[@]}"; do
     base="${f%.*}"
-    present["$base"]="$f"
+    if is_video "$f"; then
+      motions["${base%_HEVC}"]="$f"
+    elif is_image "$f"; then
+      stills["$base"]="$f"
+    fi
   done
 
   items=()
@@ -241,13 +250,9 @@ _build_index() {
     name="$(basename "$f")"
     base="${f%.*}"
     if is_video "$f"; then
-      # A Live Photo's motion half is X_HEVC.MOV next to X.HEIC (or X.JPG).
-      # It belongs to the still, not to the grid.
-      if [[ "$base" == *_HEVC ]]; then
-        still="${base%_HEVC}"
-        if [ -n "${present[$still]:-}" ]; then
-          continue
-        fi
+      # A Live Photo's motion half belongs to the still, not to the grid.
+      if [ -n "${stills[${base%_HEVC}]:-}" ]; then
+        continue
       fi
       kind=video
     elif is_image "$f"; then
@@ -285,7 +290,7 @@ _build_index() {
       else
         preview="$f"
       fi
-      live="${present[${base}_HEVC]:-}"
+      live="${motions[$base]:-}"
       if [ -n "$live" ]; then
         kind=live
         video="$live"
