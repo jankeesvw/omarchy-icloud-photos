@@ -25,18 +25,18 @@
 
 The quickest way is to let your coding agent do it. Paste this into Claude Code, Codex or whatever runs your terminal:
 
-> Install Omarchy iCloud Photos from https://github.com/jankeesvw/omarchy-icloud-photos on this Omarchy machine. Install the pacman packages quickshell, imagemagick, ffmpeg, jq and wl-clipboard if they are missing. Clone the repository into ~/Documents/github.com/jankeesvw/omarchy-icloud-photos and run its install.sh; it needs no root and fetches icloudpd and a Python 3.13 itself. Then start `omarchy-icloud-photos` and tell me it is ready for me to sign in; the sign-in happens inside the window and you never need my password. Do not run icloudpd with `--auto-delete` or `--keep-omarchy-icloud-photos-days`, and do not change the config beyond what install.sh writes.
+> Install Omarchy iCloud Photos from https://github.com/jankeesvw/omarchy-icloud-photos on this Omarchy machine. Install the pacman packages quickshell, imagemagick, libheif, ffmpeg, jq and wl-clipboard if they are missing. Clone the repository into ~/Documents/github.com/jankeesvw/omarchy-icloud-photos and run its install.sh; it needs no root and fetches icloudpd and a Python 3.13 itself. Then start `omarchy-icloud-photos` and tell me it is ready for me to sign in; the sign-in happens inside the window and you never need my password. Do not run icloudpd with `--auto-delete` or `--keep-omarchy-icloud-photos-days`, and do not change the config beyond what install.sh writes.
 
 <details>
 <summary>By hand</summary>
 
 ```bash
-sudo pacman -S --needed quickshell imagemagick ffmpeg jq wl-clipboard
+sudo pacman -S --needed quickshell imagemagick libheif ffmpeg jq wl-clipboard
 git clone https://github.com/jankeesvw/omarchy-icloud-photos.git ~/Documents/github.com/jankeesvw/omarchy-icloud-photos
 ~/Documents/github.com/jankeesvw/omarchy-icloud-photos/install.sh
 ```
 
-The installer links the launcher and the sync script into `~/.local/bin`, adds "Omarchy iCloud Photos" to the app launcher, fetches the icloudpd binary into `~/.local/bin` when it is not installed already, creates a small Python virtualenv for the iCloud helper (a 3.13 from mise when the system Python is newer) and enables the sync timer. Nothing after the pacman line needs root.
+The installer links the launcher and the sync script into `~/.local/bin`, adds "Omarchy iCloud Photos" to the app launcher, fetches the icloudpd binary into `~/.local/bin` when it is not installed already (and replaces that copy when the repository pins a newer one), creates a small Python virtualenv for the iCloud helper (a 3.13 from mise when the system Python is newer) and enables the sync timer. Nothing after the pacman line needs root.
 
 Then start `omarchy-icloud-photos`, or pick "Omarchy iCloud Photos" in the launcher, and sign in. Apple ID and password first, then the six-digit code from your phone.
  The first sync takes a few minutes. Run `install.sh` again after a `git pull`; everything is linked, not copied.
@@ -178,6 +178,14 @@ ui/Theme.qml               colours from ~/.local/state/omarchy/current/theme/col
 systemd/                   user service + 30 minute timer
 install.sh                 links everything into place
 ```
+
+## Troubleshooting
+
+`journalctl --user -u omarchy-icloud-photos-sync` shows what the last syncs did, and `~/.cache/omarchy-icloud-photos/sync.log` has icloudpd's own output of the last one.
+
+**No new photos, and the banner says the library is still being indexed.** icloudpd asks iCloud whether the photo library is ready before it lists anything, and Apple sometimes answers "not finished indexing" for days, often on accounts with a device on an iOS beta ([icloudpd#1387](https://github.com/icloud-photos-downloader/icloud_photos_downloader/issues/1387), [icloudpd#1361](https://github.com/icloud-photos-downloader/icloud_photos_downloader/issues/1361)). icloudpd then downloads nothing and still reports success. From icloudpd 1.34 the sync passes `--ignore-indexing-state`, which carries on when iCloud keeps answering RUNNING. iCloud can also mix in a FAILED answer, sometimes only for one of your libraries and not on every run; 1.34 still stops on those, and the icloudpd release after it carries on there too. Run `git pull` and `install.sh` to get the icloudpd this repository pins. The sync only ever copies, so carrying on can at worst mean a photo arrives a run later.
+
+**Photos are missing from the grid, and the banner mentions HEIC.** ImageMagick reads HEIC, the iPhone's photo format, through libheif, which the imagemagick package only lists as optional. An update can remove it along with whatever pulled it in; Omarchy replacing imv with omaview did. `sudo pacman -S libheif` brings it back, and the next sync makes the missing thumbnails.
 
 ## Contributing
 
