@@ -33,6 +33,7 @@ import sys
 import urllib.parse
 from pathlib import Path
 
+import pyicloud_ipd.services.photos as photos_service
 from pyicloud_ipd.base import PyiCloudService
 from pyicloud_ipd.exceptions import (
     PyiCloudConnectionErrorException,
@@ -94,7 +95,18 @@ def connect(cfg):
     # The constructor signs in by itself (session token first, password if
     # needed). Calling authenticate() again would be a second sign-in in a
     # row, which Apple answers with a 503.
-    api = PyiCloudService("com", cfg["APPLE_ID"], lambda: None, cookie_directory=cfg["COOKIES"])
+    #
+    # iCloud can report a photo library as still being indexed for days
+    # (icloudpd #1387), and opening one then raises. icloudpd only lets that
+    # pass for runs that copy, not for ones that delete, because a short
+    # listing there could remove the wrong files. Here it cannot: one asset is
+    # looked up by filename and capture time, so a short listing ends in "not
+    # found", never in the wrong photo. So the state is ignored, and asked
+    # once instead of icloudpd's 15 times 4 seconds, which made every delete
+    # wait a minute.
+    photos_service.INDEXING_STATE_ATTEMPTS = 1
+    api = PyiCloudService("com", cfg["APPLE_ID"], lambda: None, cookie_directory=cfg["COOKIES"],
+                          ignore_indexing_state=True)
     if api.requires_2fa:
         fail("iCloud session expired; run icloudpd --auth-only")
     return api
@@ -309,7 +321,13 @@ def main():
     r = sub.add_parser("restore"); r.add_argument("--key", required=True)
     args = p.parse_args()
     cfg = read_config(require_id=args.cmd != "login")
-    {"login": cmd_login, "find": cmd_find, "delete": cmd_delete, "restore": cmd_restore}[args.cmd](args, cfg)
+    # An iCloud error past sign-in (a library iCloud will not open, say) used
+    # to end in a traceback, which the window could only show as "no answer
+    # from the helper". Reported as a failure it shows what iCloud said.
+    try:
+        {"login": cmd_login, "find": cmd_find, "delete": cmd_delete, "restore": cmd_restore}[args.cmd](args, cfg)
+    except PyiCloudException as e:
+        fail(f"iCloud: {e}")
 
 
 if __name__ == "__main__":

@@ -6,13 +6,31 @@ here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 config="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 for tool in quickshell magick ffmpeg ffprobe jq wl-copy; do
-  command -v "$tool" >/dev/null || { echo "missing: $tool (pacman -S quickshell imagemagick ffmpeg jq wl-clipboard)" >&2; exit 1; }
+  command -v "$tool" >/dev/null || { echo "missing: $tool (pacman -S quickshell imagemagick libheif ffmpeg jq wl-clipboard)" >&2; exit 1; }
 done
+# HEIC, the iPhone's photo format, reaches ImageMagick through libheif, which
+# the imagemagick package only lists as optional. Captured first: grep -q
+# closing the pipe early would fail the pipeline under pipefail.
+magick_formats=$(magick -list format 2>/dev/null || true)
+if ! grep -qiE '^\s*HEIC\*?\s' <<< "$magick_formats"; then
+  echo "missing: HEIC support in ImageMagick (pacman -S libheif)" >&2
+  exit 1
+fi
 
 # icloudpd: the AUR package if you have it, otherwise the release binary goes
-# into ~/.local/bin so nothing here needs root.
-ICLOUDPD_VERSION=1.32.3
-if ! command -v icloudpd >/dev/null; then
+# into ~/.local/bin so nothing here needs root. That copy is this script's
+# own, so a run after a git pull replaces it when it is older than
+# ICLOUDPD_VERSION. An AUR package is left to pacman.
+ICLOUDPD_VERSION=1.34.0
+own_icloudpd="$HOME/.local/bin/icloudpd"
+icloudpd_version() { "$1" --version 2>/dev/null | sed -n 's/^version:\([0-9.]*\).*/\1/p'; }
+older_than_pin() { [ "$(printf '%s\n%s\n' "$1" "$ICLOUDPD_VERSION" | sort -V | head -1)" != "$ICLOUDPD_VERSION" ]; }
+found_icloudpd="$(command -v icloudpd || true)"
+if [ -n "$found_icloudpd" ] && [ "$(readlink -f "$found_icloudpd")" != "$(readlink -f "$own_icloudpd")" ]; then
+  if older_than_pin "$(icloudpd_version "$found_icloudpd")"; then
+    echo "note: $found_icloudpd is older than icloudpd $ICLOUDPD_VERSION; update it, or syncing stops while iCloud reports the library as being indexed" >&2
+  fi
+elif [ ! -x "$own_icloudpd" ] || older_than_pin "$(icloudpd_version "$own_icloudpd")"; then
   case "$(uname -m)" in
     x86_64) arch=amd64 ;;
     aarch64) arch=arm64 ;;
@@ -20,9 +38,12 @@ if ! command -v icloudpd >/dev/null; then
   esac
   mkdir -p "$HOME/.local/bin"
   echo "downloading icloudpd $ICLOUDPD_VERSION…"
-  curl -fsSL -o "$HOME/.local/bin/icloudpd" \
-    "https://github.com/icloud-photos-downloader/icloud_photos_downloader/releases/download/v$ICLOUDPD_VERSION/icloudpd-$ICLOUDPD_VERSION-linux-$arch"
-  chmod +x "$HOME/.local/bin/icloudpd"
+  # Under a temporary name first, so a failed download keeps the old one.
+  curl -fsSL -o "$own_icloudpd.tmp" \
+    "https://github.com/icloud-photos-downloader/icloud_photos_downloader/releases/download/v$ICLOUDPD_VERSION/icloudpd-$ICLOUDPD_VERSION-linux-$arch" \
+    || { rm -f "$own_icloudpd.tmp"; echo "could not download icloudpd $ICLOUDPD_VERSION" >&2; exit 1; }
+  chmod +x "$own_icloudpd.tmp"
+  mv "$own_icloudpd.tmp" "$own_icloudpd"
 fi
 
 # Installs from before the rename (everything was called icloud-recent) move
@@ -65,9 +86,16 @@ fi
 
 # The trash helper talks to iCloud through pyicloud, which comes with the
 # icloudpd sources. It lives in a virtualenv inside the repository.
-# icloudpd's Python sources want 3.10 up to 3.13. Use the system python when
-# it fits, otherwise a 3.13 from mise (installed on demand, no root needed).
-python_ok() { "$1" -c 'import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] <= (3, 13) else 1)' 2>/dev/null; }
+# icloudpd's Python sources want 3.11 up to 3.13 here. Use the system python
+# when it fits, otherwise a 3.13 from mise (installed on demand, no root needed).
+python_ok() { "$1" -c 'import sys; sys.exit(0 if (3, 11) <= sys.version_info[:2] <= (3, 13) else 1)' 2>/dev/null; }
+# A virtualenv from an older install can sit on a python the pinned icloudpd
+# no longer runs on (1.34 dropped 3.10); it only holds icloudpd, so it is
+# simply made again.
+if [ -x "$here/.venv/bin/python" ] && ! python_ok "$here/.venv/bin/python"; then
+  echo "making the iCloud helper's virtualenv again for icloudpd $ICLOUDPD_VERSION…"
+  rm -rf "$here/.venv"
+fi
 if [ ! -x "$here/.venv/bin/python" ]; then
   py=""
   for cand in python3 "$HOME"/.local/share/mise/installs/python/3.13*/bin/python3 "$HOME"/.local/share/mise/installs/python/3.12*/bin/python3; do
@@ -78,9 +106,15 @@ if [ ! -x "$here/.venv/bin/python" ]; then
     mise install python@3.13 >/dev/null
     py="$(mise where python@3.13)/bin/python3"
   fi
-  [ -n "$py" ] && python_ok "$py" || { echo "need a python between 3.10 and 3.13 for the iCloud helper (mise install python@3.13)" >&2; exit 1; }
+  [ -n "$py" ] && python_ok "$py" || { echo "need a python between 3.11 and 3.13 for the iCloud helper (mise install python@3.13)" >&2; exit 1; }
   "$py" -m venv "$here/.venv"
-  "$here/.venv/bin/pip" install -q "git+https://github.com/icloud-photos-downloader/icloud_photos_downloader@v$ICLOUDPD_VERSION" piexif
+fi
+# The helper's pyicloud follows the same pin as the icloudpd binary, also in
+# a virtualenv an earlier install made.
+venv_icloudpd="$("$here/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("icloudpd"))' 2>/dev/null || true)"
+if [ "$venv_icloudpd" != "$ICLOUDPD_VERSION" ]; then
+  echo "installing icloudpd $ICLOUDPD_VERSION for the iCloud helper…"
+  "$here/.venv/bin/pip" install -q --upgrade "git+https://github.com/icloud-photos-downloader/icloud_photos_downloader@v$ICLOUDPD_VERSION" piexif
 fi
 
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true

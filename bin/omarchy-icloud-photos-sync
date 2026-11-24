@@ -55,6 +55,43 @@ write_status() {
   mv "$tmp" "$STATUS"
 }
 
+# HEIC is the iPhone's own photo format. ImageMagick reads it through libheif,
+# which the imagemagick package only lists as optional, so an update that
+# removes whatever pulled it in takes HEIC support with it (Omarchy swapping
+# imv for omaview did). Every new photo would then fail its thumbnail and
+# stay out of the grid without a word, so it is checked once and reported.
+# Captured first, for the same pipefail reason as icloudpd --help below.
+heic_ok=1
+magick_formats=$(magick -list format 2>/dev/null || true)
+grep -qiE '^\s*HEIC\*?\s' <<< "$magick_formats" || heic_ok=0
+heic_missing=0
+# Filled by download() with each library iCloud reported as still being
+# indexed, so the banner can say which one got nothing new this run.
+stuck_libraries=()
+# Options only some icloudpd versions know, filled in before downloading.
+ICLOUDPD_EXTRA=()
+
+# finish_status: how the run ends. ok, unless something kept photos from
+# arriving that the window should say, in its banner.
+finish_status() {
+  local problems=()
+  if [ "${#stuck_libraries[@]}" -gt 0 ]; then
+    local which="${stuck_libraries[0]}" it=it
+    if [ "${#stuck_libraries[@]}" -gt 1 ]; then which="$which and ${stuck_libraries[1]}"; it=them; fi
+    problems+=("iCloud reported $which as still being indexed, so nothing new came from $it this time. Apple can keep this up for days; a later sync or a newer icloudpd usually gets through, see Troubleshooting in the README.")
+  fi
+  if [ "$heic_missing" -gt 0 ]; then
+    local photos="$heic_missing photos are"
+    if [ "$heic_missing" = 1 ]; then photos="1 photo is"; fi
+    problems+=("$photos missing from the grid because ImageMagick cannot read HEIC. Install libheif: sudo pacman -S libheif")
+  fi
+  if [ "${#problems[@]}" -gt 0 ]; then
+    write_status error "${problems[*]}" "${count:-0}"
+  else
+    write_status ok "" "${count:-0}"
+  fi
+}
+
 skip_download=0
 # A demo library (see omarchy-icloud-photos-demo) has nothing to download.
 [ "${DEMO:-0}" = 1 ] && skip_download=1
@@ -206,6 +243,8 @@ _build_index() {
   is_image() { case "${1,,}" in *.heic|*.heif|*.jpg|*.jpeg|*.png|*.webp|*.gif|*.tif|*.tiff|*.dng) return 0;; esac; return 1; }
   is_video() { case "${1,,}" in *.mov|*.mp4|*.m4v) return 0;; esac; return 1; }
   needs_preview() { case "${1,,}" in *.heic|*.heif|*.tif|*.tiff|*.dng) return 0;; esac; return 1; }
+  is_heic() { case "${1,,}" in *.heic|*.heif) return 0;; esac; return 1; }
+  heic_missing=0
 
   key_for() { printf '%s' "$1" | sha1sum | cut -c1-20; }
 
@@ -289,7 +328,15 @@ _build_index() {
       fresh "$f" "$thumb" || make_video_thumb "$video" "$thumb" || { echo "thumb failed: $f" >&2; continue; }
       preview="$thumb"
     else
-      fresh "$f" "$thumb" || make_thumb "$f" "$thumb" || { echo "thumb failed: $f" >&2; continue; }
+      if ! fresh "$f" "$thumb"; then
+        # Without libheif every HEIC fails the same way: count them for the
+        # status banner instead of filling the journal with magick errors.
+        if [ "$heic_ok" = 0 ] && is_heic "$f"; then
+          heic_missing=$((heic_missing + 1))
+          continue
+        fi
+        make_thumb "$f" "$thumb" || { echo "thumb failed: $f" >&2; continue; }
+      fi
       if needs_preview "$f"; then
         preview="$PREVIEWS/$key.jpg"
         fresh "$f" "$preview" || make_preview "$f" "$preview" || preview="$thumb"
@@ -347,6 +394,8 @@ _build_index() {
 download() {
   # download LABEL DIR [icloudpd args…]
   local label="$1" dir="$2"; shift 2
+  local log_start
+  log_start=$(stat -c %s "$LOG")
   write_status syncing "Downloading $label" "${count:-0}"
   # --skip-created-before gets one extra day so a photo taken late on day
   # DAYS in another time zone is still included; the viewer trims precisely.
@@ -363,6 +412,7 @@ download() {
     --folder-structure '{:%Y/%m}' \
     --no-progress-bar \
     --log-level info \
+    "${ICLOUDPD_EXTRA[@]}" \
     "$@" >> "$LOG" 2>&1 &
   local dl=$!
   while kill -0 "$dl" 2>/dev/null; do
@@ -374,6 +424,18 @@ download() {
   set +e
   wait "$dl"; rc=$?
   set -e
+  # iCloud can report a library as still being indexed for days (icloudpd
+  # #1387). icloudpd then downloads nothing and still exits 0, so only this
+  # run's part of the log says so. Not a reason to stop: the index is rebuilt
+  # as usual and finish_status says why nothing came in.
+  if grep -q 'has not finished indexing yet' <(tail -c "+$((log_start + 1))" "$LOG"); then
+    if [ "$dir" = "$SHARED_DIR" ]; then
+      stuck_libraries+=("the Shared Library")
+    else
+      stuck_libraries+=("your photo library")
+    fi
+    return 0
+  fi
   if [ "$rc" != 0 ]; then
     if grep -qiE 'two-factor|2fa|two-step|password|Please enter' "$LOG"; then
       write_status auth-required "iCloud session expired. Run: icloudpd --auth-only --username $APPLE_ID --cookie-directory $COOKIES"
@@ -394,7 +456,7 @@ shared_libraries() {
   esac
   if [ ! -s "$LIBRARIES" ] || [ -n "$(find "$LIBRARIES" -mmin +1440 2>/dev/null)" ]; then
     if icloudpd --username "$APPLE_ID" --cookie-directory "$COOKIES" --list-libraries --log-level error \
-        2>>"$LOG" | grep '^SharedSync-' > "$LIBRARIES.tmp"; then
+        "${ICLOUDPD_EXTRA[@]}" 2>>"$LOG" | grep '^SharedSync-' > "$LIBRARIES.tmp"; then
       mv "$LIBRARIES.tmp" "$LIBRARIES"
     else
       # No shared library, or the listing failed: remember that for a day
@@ -459,7 +521,7 @@ if [ "$mode" != sync ]; then
     convert_one "${convert_ids[$i]}" || failed=$((failed + 1))
   done
   build_index
-  write_status ok "" "$count"
+  finish_status
   echo "omarchy-icloud-photos-sync: converted $((total - failed)) of $total video(s)"
   # Non-zero when nothing came of it, so a caller can tell.
   [ "$failed" -lt "$total" ]
@@ -468,6 +530,15 @@ fi
 
 if [ "$skip_download" = 0 ]; then
   : > "$LOG"
+  # Since 1.34, icloudpd can carry on when iCloud keeps reporting the library
+  # as being indexed while it lists fine (icloudpd #1387). This script only
+  # ever copies, so a listing that is short means a photo arrives a run
+  # later, never that anything is removed. An older icloudpd (an AUR package
+  # that lags behind) does not know the option, so it is only passed when
+  # icloudpd --help names it. Captured first: grep -q closing the pipe early
+  # would fail the pipeline under pipefail.
+  icloudpd_help=$(icloudpd --help 2>/dev/null || true)
+  [[ "$icloudpd_help" == *--ignore-indexing-state* ]] && ICLOUDPD_EXTRA+=(--ignore-indexing-state)
   download "from iCloud" "$LIBRARY"
   while read -r zone; do
     [ -n "$zone" ] || continue
@@ -477,5 +548,9 @@ fi
 
 write_status indexing "Building thumbnails"
 build_index
-write_status ok "" "$count"
+finish_status
 echo "omarchy-icloud-photos-sync: $count items in the last $DAYS days"
+for stuck in "${stuck_libraries[@]}"; do
+  echo "omarchy-icloud-photos-sync: iCloud reported $stuck as still being indexed; nothing new came from it" >&2
+done
+[ "$heic_missing" = 0 ] || echo "omarchy-icloud-photos-sync: $heic_missing HEIC photos have no thumbnail: ImageMagick cannot read HEIC (install libheif)" >&2
